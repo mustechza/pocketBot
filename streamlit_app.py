@@ -9,7 +9,7 @@ from io import BytesIO
 # === Configuration ===
 TELEGRAM_BOT_TOKEN = "8037778857:AAFavL2gBXOKbJnoUOoFk1vApDlBw1Lc5rs"
 TELEGRAM_CHAT_ID = "6722676136"
-SYMBOLS = ["BTCUSDT", "ETHUSDT"] # Add more Binance symbols here
+SYMBOLS = ["BTCUSDT", "ETHUSDT"]  # Add more Binance symbols here
 INTERVAL = "1m"
 LIMIT = 100
 SLEEP_TIME = 60  # seconds between checks
@@ -101,6 +101,9 @@ def fetch_klines(symbol, interval, limit):
 
 # === Strategy Evaluation ===
 def check_signals(df):
+    if len(df) < 2:
+        return []
+
     last = df.iloc[-1]
     signals = []
 
@@ -128,7 +131,7 @@ def run_bot():
     while True:
         for symbol in SYMBOLS:
             df = fetch_klines(symbol, INTERVAL, LIMIT)
-            if df is not None:
+            if df is not None and len(df) > 0:
                 df = calculate_indicators(df)
                 signals = check_signals(df)
 
