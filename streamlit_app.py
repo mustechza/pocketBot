@@ -1,46 +1,33 @@
-import requests
+import streamlit as st
 import pandas as pd
+import requests
 import numpy as np
-from datetime import datetime
-import time
 import mplfinance as mpf
 from io import BytesIO
+from datetime import datetime
+import time
 
 # === Configuration ===
 TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN"
 TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
-SYMBOLS = ["BTCUSDT", "ETHUSDT"]  # Add more Binance symbols here
-INTERVAL = "1m"
+SYMBOLS = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "XRPUSDT"]
+INTERVALS = ["1m", "5m", "15m"]
 LIMIT = 100
-SLEEP_TIME = 60  # seconds between checks
+TOP_N = 3
 
-# === Telegram Functions ===
+# === Telegram ===
 def send_telegram_message(message):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
-    try:
-        requests.post(url, data=data)
-    except Exception as e:
-        print(f"Telegram Error: {e}")
+    requests.post(url, data=data)
 
 def send_chart_to_telegram(image_buf, caption=""):
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     files = {'photo': image_buf}
     data = {'chat_id': TELEGRAM_CHAT_ID, 'caption': caption}
-    try:
-        requests.post(url, files=files, data=data)
-    except Exception as e:
-        print(f"Telegram Image Error: {e}")
+    requests.post(url, files=files, data=data)
 
-# === Indicator Calculations ===
-def calculate_indicators(df):
-    df["rsi"] = compute_rsi(df["close"], 14)
-    df["ema12"] = df["close"].ewm(span=12).mean()
-    df["ema26"] = df["close"].ewm(span=26).mean()
-    df["macd"] = df["ema12"] - df["ema26"]
-    df["signal"] = df["macd"].ewm(span=9).mean()
-    return df
-
+# === Technical Indicators ===
 def compute_rsi(series, period=14):
     delta = series.diff()
     gain = delta.where(delta > 0, 0.0)
@@ -50,102 +37,122 @@ def compute_rsi(series, period=14):
     rs = avg_gain / avg_loss
     return 100 - (100 / (1 + rs))
 
-# === Candlestick Chart Generator ===
-def generate_candlestick_chart(df, symbol):
-    df_chart = df.copy().set_index('time').tail(30)
-    df_chart["open"] = df_chart["open"].astype(float)
-    df_chart["high"] = df_chart["high"].astype(float)
-    df_chart["low"] = df_chart["low"].astype(float)
-    df_chart["close"] = df_chart["close"].astype(float)
-    
+def calculate_indicators(df):
+    df["rsi"] = compute_rsi(df["close"], 14)
+    df["ema12"] = df["close"].ewm(span=12).mean()
+    df["ema26"] = df["close"].ewm(span=26).mean()
+    df["macd"] = df["ema12"] - df["ema26"]
+    df["signal"] = df["macd"].ewm(span=9).mean()
+    return df
+
+# === Candlestick Pattern ===
+def detect_candle_pattern(df):
+    if len(df) < 2:
+        return None
+    last, prev = df.iloc[-1], df.iloc[-2]
+    if last['close'] > last['open'] and prev['close'] < prev['open'] and last['open'] < prev['close'] and last['close'] > prev['open']:
+        return "Bullish Engulfing"
+    if last['close'] < last['open'] and prev['close'] > prev['open'] and last['open'] > prev['close'] and last['close'] < prev['open']:
+        return "Bearish Engulfing"
+    return None
+
+# === Fetch Klines ===
+def fetch_klines(symbol, interval):
+    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={LIMIT}"
+    response = requests.get(url)
+    data = response.json()
+    df = pd.DataFrame(data, columns=[
+        'time', 'open', 'high', 'low', 'close', 'volume',
+        'close_time', 'quote_asset_volume', 'number_of_trades',
+        'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore']
+    )
+    df['time'] = pd.to_datetime(df['time'], unit='ms')
+    df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
+    return df[['time', 'open', 'high', 'low', 'close', 'volume']]
+
+# === Candlestick Chart ===
+def generate_chart(df, symbol):
+    df = df.set_index("time").tail(30)
     buf = BytesIO()
-    mpf.plot(df_chart, type='candle', style='charles', volume=False,
+    mpf.plot(df, type='candle', style='charles', volume=False,
              title=f"{symbol} - Last 30 Candles", ylabel='Price',
              savefig=dict(fname=buf, dpi=150, format='png'))
     buf.seek(0)
     return buf
 
-# === Candlestick Pattern Logic (Simple) ===
-def detect_candle_pattern(df):
-    if len(df) < 2:
-        return None
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
-
-    # Bullish Engulfing
-    if last['close'] > last['open'] and prev['close'] < prev['open'] and last['open'] < prev['close'] and last['close'] > prev['open']:
-        return "Bullish Engulfing"
-    # Bearish Engulfing
-    if last['close'] < last['open'] and prev['close'] > prev['open'] and last['open'] > prev['close'] and last['close'] < prev['open']:
-        return "Bearish Engulfing"
-    return None
-
-# === Binance Price Data ===
-def fetch_klines(symbol, interval, limit):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        df = pd.DataFrame(data, columns=[ 
-            'time', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_asset_volume', 'number_of_trades',
-            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-        ])
-        df['time'] = pd.to_datetime(df['time'], unit='ms')
-        df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
-        return df[['time', 'open', 'high', 'low', 'close', 'volume']]
-    except Exception as e:
-        print(f"⚠️ Error fetching {symbol} data: {e}")
-        return None
-
-# === Strategy Evaluation ===
-def check_signals(df):
-    if len(df) < 2:  # Check if there are enough rows to process
-        return []
-
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+# === Signal Evaluation ===
+def evaluate_signals(df):
+    last, prev = df.iloc[-1], df.iloc[-2]
+    score = 0
     signals = []
 
-    # RSI Overbought/Oversold
-    if last['rsi'] > 70:
-        signals.append("RSI Overbought")
-    elif last['rsi'] < 30:
+    if last['rsi'] < 30:
         signals.append("RSI Oversold")
+        score += 2
+    elif last['rsi'] > 70:
+        signals.append("RSI Overbought")
+        score += 2
 
-    # MACD crossover
     if last['macd'] > last['signal'] and prev['macd'] < prev['signal']:
         signals.append("MACD Bullish Cross")
+        score += 2
     elif last['macd'] < last['signal'] and prev['macd'] > prev['signal']:
         signals.append("MACD Bearish Cross")
+        score += 2
 
-    # Candle pattern
     pattern = detect_candle_pattern(df)
     if pattern:
         signals.append(pattern)
+        score += 1
 
-    return signals
+    return signals, score
 
-# === Main Loop ===
-def run_bot():
-    while True:
-        for symbol in SYMBOLS:
-            df = fetch_klines(symbol, INTERVAL, LIMIT)
-            if df is not None:
-                df = calculate_indicators(df)
-                signals = check_signals(df)
+# === Multi-interval Analysis ===
+def analyze_symbol(symbol):
+    combined_score = 0
+    all_signals = []
+    latest_df = None
 
-                if signals:
-                    timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-                    msg = f"📊 [{timestamp}] {symbol} Signal(s):\n" + "\n".join(f"• {s}" for s in signals)
-                    print(msg)
-                    chart = generate_candlestick_chart(df, symbol)
-                    send_chart_to_telegram(chart, msg)
+    for interval in INTERVALS:
+        df = fetch_klines(symbol, interval)
+        df = calculate_indicators(df)
+        signals, score = evaluate_signals(df)
+        combined_score += score
+        all_signals.extend([f"[{interval}] {sig}" for sig in signals])
+        if interval == "1m":
+            latest_df = df
 
-        time.sleep(SLEEP_TIME)
+    return combined_score, all_signals, latest_df
 
-# === Run ===
-if __name__ == "__main__":
-    run_bot()
+# === Streamlit UI ===
+st.set_page_config(page_title="Pocket Option Signal Bot", layout="wide")
+st.title("📈 Pocket Option Signal Dashboard")
+st.markdown("---")
 
+selected_assets = st.multiselect("Choose Assets", SYMBOLS, default=SYMBOLS)
+refresh = st.button("🔄 Refresh Now")
+
+if refresh:
+    results = []
+    for symbol in selected_assets:
+        score, signals, df = analyze_symbol(symbol)
+        results.append({"symbol": symbol, "score": score, "signals": signals, "df": df})
+
+    sorted_results = sorted(results, key=lambda x: x["score"], reverse=True)
+
+    cols = st.columns(len(sorted_results))
+    for i, r in enumerate(sorted_results):
+        with cols[i]:
+            st.subheader(f"{r['symbol']}")
+            st.metric("Confidence", r["score"])
+            for sig in r["signals"]:
+                st.markdown(f"- {sig}")
+
+    st.markdown("---")
+    for r in sorted_results[:TOP_N]:
+        chart_img = generate_chart(r["df"], r["symbol"])
+        st.image(chart_img, caption=f"{r['symbol']} Chart")
+
+        msg = f"📊 {r['symbol']} Signal(s):\n" + "\n".join(f"• {s}" for s in r['signals'])
+        send_chart_to_telegram(chart_img, msg)
+        send_telegram_message(msg)
