@@ -1,165 +1,150 @@
-import requests
+import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import datetime
-import time
-import mplfinance as mpf
-from io import BytesIO
+import matplotlib.pyplot as plt
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.metrics import mean_absolute_error
 
-# === Configuration ===
-TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
-SYMBOLS = ["BTCUSDT", "ETHUSDT"]  # Add more Binance symbols here
-INTERVALS = ["1m", "5m", "15m"]
-LIMIT = 100
-SLEEP_TIME = 60  # seconds between checks
+# App Configuration
+CSV_URL = "https://raw.githubusercontent.com/mustechza/mustech-predict/main/training_data_mock.csv"
+THRESHOLD_ALERT = 2.0  # Define a "safe" multiplier threshold
 
-# === Telegram Functions ===
-def send_telegram_message(message):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    data = {"chat_id": TELEGRAM_CHAT_ID, "text": message}
+# Load Training Data
+@st.cache_data
+def load_training_data(url):
+    df = pd.read_csv(url)
+    df.columns = [c.lower().strip() for c in df.columns]
+    if 'target' not in df.columns:
+        st.error("CSV must contain a 'target' column.")
+        return None, None
+    X = df.drop(columns=['target'])
+    y = df['target'].apply(lambda x: min(x, 10.5))  # Cap values
+    return X, y
+
+X_train, y_train = load_training_data(CSV_URL)
+model = GradientBoostingRegressor()
+model.fit(X_train, y_train)
+
+# App Title
+st.title("🎯 Crash Predictor + Money Manager")
+
+# Input + Prediction
+st.header("📥 Input")
+with st.form("input_form"):
+    recent_input = st.text_input("Enter recent crash multipliers (comma-separated)")
+    feedback_value = st.text_input("Actual next multiplier (optional)")
+    strategy = st.selectbox("💸 Choose Strategy", ["Flat Betting", "Martingale", "Anti-Martingale"])
+    bankroll = st.number_input("💰 Starting Bankroll", value=100.0)
+    base_bet = st.number_input("🎯 Base Bet Amount", value=1.0)
+    risk_threshold = st.slider("⚠️ Risk Threshold (stop if bankroll below)", min_value=0.0, max_value=100.0, value=10.0)
+    submitted = st.form_submit_button("🔁 Submit")
+
+def parse_input(text):
     try:
-        requests.post(url, data=data)
-    except Exception as e:
-        print(f"Telegram Error: {e}")
+        raw = [float(x.strip().lower().replace('x', '')) for x in text.split(',') if x.strip()]
+        capped = [min(x, 10.5) for x in raw]
+        return capped
+    except:
+        return []
 
-def send_chart_to_telegram(image_buf, caption=""):
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    files = {'photo': image_buf}
-    data = {'chat_id': TELEGRAM_CHAT_ID, 'caption': caption}
-    try:
-        requests.post(url, files=files, data=data)
-    except Exception as e:
-        print(f"Telegram Image Error: {e}")
-
-# === Indicator Calculations ===
-def calculate_indicators(df):
-    df["rsi"] = compute_rsi(df["close"], 14)
-    df["ema12"] = df["close"].ewm(span=12).mean()
-    df["ema26"] = df["close"].ewm(span=26).mean()
-    df["macd"] = df["ema12"] - df["ema26"]
-    df["signal"] = df["macd"].ewm(span=9).mean()
-    return df
-
-def compute_rsi(series, period=14):
-    delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-    avg_gain = gain.ewm(com=period-1, min_periods=period).mean()
-    avg_loss = loss.ewm(com=period-1, min_periods=period).mean()
-    rs = avg_gain / avg_loss
-    return 100 - (100 / (1 + rs))
-
-# === Candlestick Chart Generator ===
-def generate_candlestick_chart(df, symbol):
-    df_chart = df.copy().set_index('time').tail(30)
-    df_chart["open"] = df_chart["open"].astype(float)
-    df_chart["high"] = df_chart["high"].astype(float)
-    df_chart["low"] = df_chart["low"].astype(float)
-    df_chart["close"] = df_chart["close"].astype(float)
-
-    buf = BytesIO()
-    mpf.plot(df_chart, type='candle', style='charles', volume=False,
-             title=f"{symbol} - Last 30 Candles", ylabel='Price',
-             savefig=dict(fname=buf, dpi=150, format='png'))
-    buf.seek(0)
-    return buf
-
-# === Candlestick Pattern Logic (Simple) ===
-def detect_candle_pattern(df):
-    if len(df) < 2:
+def extract_features(values):
+    if len(values) < 10:
         return None
-    last = df.iloc[-1]
-    prev = df.iloc[-2]
+    last_vals = values[-10:]
+    return np.array([[np.mean(last_vals), np.std(last_vals), last_vals[-1],
+                      max(last_vals), min(last_vals),
+                      last_vals[-1] - last_vals[-2] if len(last_vals) > 1 else 0]])
 
-    if last['close'] > last['open'] and prev['close'] < prev['open'] and last['open'] < prev['close'] and last['close'] > prev['open']:
-        return "Bullish Engulfing"
-    if last['close'] < last['open'] and prev['close'] > prev['open'] and last['open'] > prev['close'] and last['close'] < prev['open']:
-        return "Bearish Engulfing"
-    return None
+crash_values = parse_input(recent_input)
+features = extract_features(crash_values) if crash_values else None
 
-# === Binance Price Data ===
-def fetch_klines(symbol, interval, limit):
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval={interval}&limit={limit}"
-    try:
-        response = requests.get(url, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        df = pd.DataFrame(data, columns=[
-            'time', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_asset_volume', 'number_of_trades',
-            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-        ])
-        df['time'] = pd.to_datetime(df['time'], unit='ms')
-        df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
-        return df[['time', 'open', 'high', 'low', 'close', 'volume']]
-    except Exception as e:
-        print(f"⚠️ Error fetching {symbol} data: {e}")
-        return None
+if features is not None:
+    prediction = model.predict(features)[0]
+    safe_target = round(prediction * 0.97, 2)
+    st.subheader(f"🎯 Predicted: {prediction:.2f}")
+    st.success(f"🛡️ Safe Multiplier Target (3% edge): {safe_target:.2f}")
 
-# === Signal Check + Confidence ===
-def check_signals(df):
-    last = df.iloc[-1]
-    signals = []
+    # Threshold Alert
+    if prediction < THRESHOLD_ALERT:
+        st.warning(f"⚠️ Alert: Prediction below safety threshold ({THRESHOLD_ALERT}x)")
 
-    if last['rsi'] > 70:
-        signals.append("RSI Overbought")
-    elif last['rsi'] < 30:
-        signals.append("RSI Oversold")
+    # Feedback Handling
+    if submitted and feedback_value:
+        try:
+            feedback = min(float(feedback_value), 10.5)
+            X_train = pd.concat([X_train, pd.DataFrame(features, columns=X_train.columns)], ignore_index=True)
+            y_train = pd.concat([y_train, pd.Series([feedback])], ignore_index=True)
+            model.fit(X_train, y_train)
+            st.success("Model retrained with feedback!")
 
-    if last['macd'] > last['signal'] and df.iloc[-2]['macd'] < df.iloc[-2]['signal']:
-        signals.append("MACD Bullish Cross")
-    elif last['macd'] < last['signal'] and df.iloc[-2]['macd'] > df.iloc[-2]['signal']:
-        signals.append("MACD Bearish Cross")
+            # Append new multiplier to recent input
+            crash_values.append(feedback)
+        except:
+            st.error("Invalid feedback value.")
 
-    pattern = detect_candle_pattern(df)
-    if pattern:
-        signals.append(pattern)
+# Win/Loss Tracker
+if len(X_train) >= 20:
+    st.header("📈 Prediction Accuracy (Last 20)")
+    preds = model.predict(X_train.tail(20))
+    actuals = y_train.tail(20).values
+    outcomes = (preds.round(2) <= actuals.round(2))
+    result_df = pd.DataFrame({
+        "Predicted": preds.round(2),
+        "Actual": actuals.round(2),
+        "Result": ["✅ Win" if x else "❌ Loss" for x in outcomes]
+    })
+    st.dataframe(result_df.style.applymap(
+        lambda val: 'background-color: #d4edda' if val == "✅ Win" else 'background-color: #f8d7da',
+        subset=["Result"]
+    ))
 
-    return signals
+    # Summary Stats
+    win_rate = np.mean(outcomes)
+    st.metric("🏆 Win Rate", f"{win_rate*100:.1f}%")
+    st.metric("✅ Wins", int(np.sum(outcomes)))
+    st.metric("❌ Losses", int(np.sum(~outcomes)))
 
-def calculate_confidence_score(all_signals):
-    score = 0
-    detail = []
-    for interval, signals in all_signals.items():
-        for signal in signals:
-            if "RSI" in signal:
-                score += 1
-            elif "MACD" in signal:
-                score += 2
-            elif "Engulfing" in signal:
-                score += 2
-        detail.append(f"{interval}: {', '.join(signals) if signals else 'No Signal'}")
-    return score, detail
+# ================================
+# 💸 Money Management Simulation
+# ================================
+if submitted and features is not None:
+    st.header("💸 Strategy Simulation")
+    simulated_bankroll = bankroll
+    current_bet = base_bet
+    logs = []
 
-# === Main Loop ===
-def run_bot():
-    while True:
-        for symbol in SYMBOLS:
-            all_signals = {}
-            df_latest = None
+    for pred, actual in zip(preds, actuals):
+        win = pred <= actual
+        logs.append({
+            "Bankroll Before": simulated_bankroll,
+            "Bet": current_bet,
+            "Prediction": round(pred, 2),
+            "Actual": round(actual, 2),
+            "Win": win
+        })
+        if win:
+            simulated_bankroll += current_bet
+            if strategy == "Anti-Martingale":
+                current_bet *= 2
+            else:
+                current_bet = base_bet
+        else:
+            simulated_bankroll -= current_bet
+            if strategy == "Martingale":
+                current_bet *= 2
+            else:
+                current_bet = base_bet
 
-            for interval in INTERVALS:
-                df = fetch_klines(symbol, interval, LIMIT)
-                if df is None:
-                    continue
-                df = calculate_indicators(df)
-                all_signals[interval] = check_signals(df)
-                if interval == "1m":
-                    df_latest = df
+        # Stop if risk threshold crossed
+        if simulated_bankroll < risk_threshold:
+            break
 
-            score, detail = calculate_confidence_score(all_signals)
-            if score > 0:
-                timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-                signal_summary = "\n".join(detail)
-                msg = f"📊 [{timestamp}] {symbol} Confidence Score: {score}\n{signal_summary}"
-                print(msg)
-                chart = generate_candlestick_chart(df_latest, symbol)
-                send_chart_to_telegram(chart, msg)
+    log_df = pd.DataFrame(logs)
+    st.dataframe(log_df.style.applymap(
+        lambda v: 'background-color: #d4edda' if v is True else 'background-color: #f8d7da',
+        subset=["Win"]
+    ))
 
-        time.sleep(SLEEP_TIME)
-
-# === Run ===
-if __name__ == "__main__":
-    run_bot()
-
+    st.subheader("💹 Final Result")
+    st.metric("Final Bankroll", f"{simulated_bankroll:.2f}")
+    st.metric("Profit/Loss", f"{simulated_bankroll - bankroll:.2f}")
