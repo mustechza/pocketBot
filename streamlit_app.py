@@ -7,10 +7,10 @@ import mplfinance as mpf
 from io import BytesIO
 
 # === Configuration ===
-TELEGRAM_BOT_TOKEN = "YOUR_BOT_TOKEN"
-TELEGRAM_CHAT_ID = "YOUR_CHAT_ID"
-SYMBOLS = ["BTCUSDT", "ETHUSDT"]  # Add more Binance symbols here
-INTERVALS = ["1m", "5m", "15m"]
+TELEGRAM_BOT_TOKEN = "8037778857:AAFavL2gBXOKbJnoUOoFk1vApDlBw1Lc5rs"
+TELEGRAM_CHAT_ID = "6722676136"
+SYMBOLS = ["BTCUSDT", "ETHUSDT"] # Add more Binance symbols here
+INTERVAL = "1m"
 LIMIT = 100
 SLEEP_TIME = 60  # seconds between checks
 
@@ -57,7 +57,7 @@ def generate_candlestick_chart(df, symbol):
     df_chart["high"] = df_chart["high"].astype(float)
     df_chart["low"] = df_chart["low"].astype(float)
     df_chart["close"] = df_chart["close"].astype(float)
-
+    
     buf = BytesIO()
     mpf.plot(df_chart, type='candle', style='charles', volume=False,
              title=f"{symbol} - Last 30 Candles", ylabel='Price',
@@ -72,8 +72,10 @@ def detect_candle_pattern(df):
     last = df.iloc[-1]
     prev = df.iloc[-2]
 
+    # Bullish Engulfing
     if last['close'] > last['open'] and prev['close'] < prev['open'] and last['open'] < prev['close'] and last['close'] > prev['open']:
         return "Bullish Engulfing"
+    # Bearish Engulfing
     if last['close'] < last['open'] and prev['close'] > prev['open'] and last['open'] > prev['close'] and last['close'] < prev['open']:
         return "Bearish Engulfing"
     return None
@@ -97,65 +99,45 @@ def fetch_klines(symbol, interval, limit):
         print(f"⚠️ Error fetching {symbol} data: {e}")
         return None
 
-# === Signal Check + Confidence ===
+# === Strategy Evaluation ===
 def check_signals(df):
     last = df.iloc[-1]
     signals = []
 
+    # RSI Overbought/Oversold
     if last['rsi'] > 70:
         signals.append("RSI Overbought")
     elif last['rsi'] < 30:
         signals.append("RSI Oversold")
 
+    # MACD crossover
     if last['macd'] > last['signal'] and df.iloc[-2]['macd'] < df.iloc[-2]['signal']:
         signals.append("MACD Bullish Cross")
     elif last['macd'] < last['signal'] and df.iloc[-2]['macd'] > df.iloc[-2]['signal']:
         signals.append("MACD Bearish Cross")
 
+    # Candle pattern
     pattern = detect_candle_pattern(df)
     if pattern:
         signals.append(pattern)
 
     return signals
 
-def calculate_confidence_score(all_signals):
-    score = 0
-    detail = []
-    for interval, signals in all_signals.items():
-        for signal in signals:
-            if "RSI" in signal:
-                score += 1
-            elif "MACD" in signal:
-                score += 2
-            elif "Engulfing" in signal:
-                score += 2
-        detail.append(f"{interval}: {', '.join(signals) if signals else 'No Signal'}")
-    return score, detail
-
 # === Main Loop ===
 def run_bot():
     while True:
         for symbol in SYMBOLS:
-            all_signals = {}
-            df_latest = None
-
-            for interval in INTERVALS:
-                df = fetch_klines(symbol, interval, LIMIT)
-                if df is None:
-                    continue
+            df = fetch_klines(symbol, INTERVAL, LIMIT)
+            if df is not None:
                 df = calculate_indicators(df)
-                all_signals[interval] = check_signals(df)
-                if interval == "1m":
-                    df_latest = df
+                signals = check_signals(df)
 
-            score, detail = calculate_confidence_score(all_signals)
-            if score > 0:
-                timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
-                signal_summary = "\n".join(detail)
-                msg = f"📊 [{timestamp}] {symbol} Confidence Score: {score}\n{signal_summary}"
-                print(msg)
-                chart = generate_candlestick_chart(df_latest, symbol)
-                send_chart_to_telegram(chart, msg)
+                if signals:
+                    timestamp = datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S')
+                    msg = f"📊 [{timestamp}] {symbol} Signal(s):\n" + "\n".join(f"• {s}" for s in signals)
+                    print(msg)
+                    chart = generate_candlestick_chart(df, symbol)
+                    send_chart_to_telegram(chart, msg)
 
         time.sleep(SLEEP_TIME)
 
