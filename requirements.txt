@@ -1,3 +1,9 @@
 streamlit
-mplfinance
-
+pandas
+numpy
+requests
+plotly
+scikit-learn
+streamlit-autorefresh
+ta
+websocket-client
