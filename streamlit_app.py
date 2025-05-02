@@ -1,62 +1,25 @@
-
-# crypto_signals_dashboard.py
-
 import streamlit as st
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import pandas_ta as ta
-from sklearn.ensemble import RandomForestClassifier
 import streamlit.components.v1 as components
-from datetime import datetime
-from binance.client import Client
-import time
+from sklearn.ensemble import RandomForestClassifier
 
-# SECTION 1: Sidebar Inputs
-st.sidebar.title("⚙️ Settings")
+# -------------------- HELPER FUNCTIONS --------------------
+def calculate_indicators(df):
+    df['EMA5'] = df['close'].ewm(span=5, adjust=False).mean()
+    df['EMA20'] = df['close'].ewm(span=20, adjust=False).mean()
+    df['RSI'] = 100 - (100 / (1 + df['close'].pct_change().rolling(14).mean() / df['close'].pct_change().rolling(14).std()))
+    df['MACD'] = df['close'].ewm(span=12, adjust=False).mean() - df['close'].ewm(span=26, adjust=False).mean()
+    df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
+    df['BB_upper'] = df['close'].rolling(window=20).mean() + (df['close'].rolling(window=20).std() * 2)
+    df['BB_lower'] = df['close'].rolling(window=20).mean() - (df['close'].rolling(window=20).std() * 2)
+    df['Stochastic'] = ((df['close'] - df['low'].rolling(14).min()) /
+                       (df['high'].rolling(14).max() - df['low'].rolling(14).min())) * 100
+    return df.dropna()
 
-data_source = st.sidebar.selectbox("Select Data Source", ["Live (Binance)", "Upload CSV"])
-asset = st.sidebar.text_input("Asset (e.g. BTCUSDT)", value="BTCUSDT")
-interval = st.sidebar.selectbox("Interval", ["1m", "5m", "15m", "1h", "4h", "1d"])
-strategy = st.sidebar.selectbox("Strategy", ["EMA Cross", "RSI Divergence", "MACD Cross", 
-                                             "Bollinger Band Bounce", "Stochastic Oscillator",
-                                             "EMA + RSI Combined", "Machine Learning"])
-
-st.sidebar.markdown("### 📊 Indicator Parameters")
-ema_short = st.sidebar.slider("EMA Short", 3, 20, 5)
-ema_long = st.sidebar.slider("EMA Long", 10, 50, 20)
-rsi_period = st.sidebar.slider("RSI Period", 5, 30, 14)
-macd_fast = st.sidebar.slider("MACD Fast", 5, 20, 12)
-macd_slow = st.sidebar.slider("MACD Slow", 10, 40, 26)
-macd_signal = st.sidebar.slider("MACD Signal", 5, 20, 9)
-bb_period = st.sidebar.slider("BB Period", 10, 40, 20)
-
-st.sidebar.markdown("### 💰 Money Management")
-money_mgmt = st.sidebar.selectbox("Strategy", ["Flat", "Martingale"])
-initial_balance = st.sidebar.number_input("Initial Balance ($)", value=1000)
-bet_size = st.sidebar.number_input("Bet Size ($)", value=10)
-
-signal_alerts = st.sidebar.checkbox("🔔 Enable Browser Alerts", value=True)
-
-
-# SECTION 2: Helper Functions
-def fetch_candles(symbol, interval=interval, limit=200):
-    client = Client()
-    klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
-    df = pd.DataFrame(klines, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume',
-                                       'close_time', 'quote_asset_volume', 'number_of_trades',
-                                       'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df[['open', 'high', 'low', 'close', 'volume']] = df[['open', 'high', 'low', 'close', 'volume']].astype(float)
-    return df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
-
-def generate_signal(time, signal, price):
-    return {
-        "Time": time,
-        "Signal": signal,
-        "Price": round(price, 4),
-        "Trade Duration (min)": 2
-    }
+def generate_signal(t, signal_type, price):
+    return {"Time": t, "Signal": signal_type, "Price": price, "Trade Duration (min)": 2}
 
 def detect_signals(df, strategy): 
     signals = []
@@ -158,14 +121,6 @@ def simulate_money_management(signals, strategy="Flat", initial_balance=1000, be
         "Profit Factor": profit_factor
     }
 
-def plot_chart(df, asset):
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Candles'))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['EMA5'], name="EMA5", line=dict(color='blue')))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['EMA20'], name="EMA20", line=dict(color='red')))
-    fig.update_layout(title=asset, xaxis_rangeslider_visible=False)
-    return fig
-
 def show_browser_alert(message):
     js_code = f"""
     <script>
@@ -174,72 +129,40 @@ def show_browser_alert(message):
     """
     components.html(js_code)
 
+# -------------------- STREAMLIT UI --------------------
+st.set_page_config(layout="wide")
+st.title("📈 Multi-Strategy Crypto Signal App")
 
-# SECTION 3: Main Dashboard Logic
-st.title("📈 Crypto Trading Signals Dashboard")
+uploaded_file = st.file_uploader("Upload OHLCV CSV (with timestamp, open, high, low, close)")
+if uploaded_file is not None:
+    df = pd.read_csv(uploaded_file, parse_dates=['timestamp'])
+    df = df.sort_values('timestamp')
 
-# Load data
-if data_source == "Live (Binance)":
-    df = fetch_candles(asset)
-else:
-    uploaded_file = st.sidebar.file_uploader("Upload CSV", type=["csv"])
-    if uploaded_file:
-        df = pd.read_csv(uploaded_file)
-        df['timestamp'] = pd.to_datetime(df['timestamp'])
-    else:
-        st.warning("Please upload a CSV file.")
-        st.stop()
+    money_strategy = st.sidebar.selectbox("Money Management Strategy", ["Flat", "Martingale"])
 
-# Calculate indicators
-df['EMA5'] = ta.ema(df['close'], length=ema_short)
-df['EMA20'] = ta.ema(df['close'], length=ema_long)
-df['RSI'] = ta.rsi(df['close'], length=rsi_period)
-macd = ta.macd(df['close'], fast=macd_fast, slow=macd_slow, signal=macd_signal)
-df['MACD'] = macd['MACD_12_26_9']
-df['MACD_signal'] = macd['MACDs_12_26_9']
-bb = ta.bbands(df['close'], length=bb_period)
-df['BB_upper'] = bb['BBU_20_2.0']
-df['BB_lower'] = bb['BBL_20_2.0']
-stoch = ta.stoch(df['high'], df['low'], df['close'], k=14, d=3)
-df['Stochastic'] = stoch['STOCHk_14_3_3']
+    selected_strategies = st.sidebar.multiselect(
+        "Select Strategies for Comparison",
+        [
+            "EMA Cross", "RSI Divergence", "MACD Cross", "Bollinger Band Bounce",
+            "Stochastic Oscillator", "EMA + RSI Combined", "ML Model (Random Forest)"
+        ],
+        default=["EMA Cross", "RSI Divergence"]
+    )
 
-# Detect signals
-if strategy == "Machine Learning":
-    signal_df = train_ml_model(df)
-    signals = signal_df.to_dict("records")
-else:
-    signal_list = detect_signals(df, strategy)
-    signals = signal_list
+    comparison_results = []
 
-# Show alerts for new signals (latest only)
-if signal_alerts and signals:
-    latest_signal = signals[-1]
-    show_browser_alert(f"{latest_signal['Signal']} at {latest_signal['Time']} | Price: {latest_signal['Price']}")
+    for strategy in selected_strategies:
+        if strategy == "ML Model (Random Forest)":
+            df_ind = calculate_indicators(df)
+            df_signals = train_ml_model(df_ind)
+            signals = df_signals.to_dict('records')
+        else:
+            df_ind = calculate_indicators(df)
+            signals = detect_signals(df_ind, strategy)
 
-# Display latest signals
-st.subheader("📌 Latest Signals")
-if signals:
-    signal_df = pd.DataFrame(signals).sort_values("Time", ascending=False).reset_index(drop=True)
-    st.dataframe(signal_df.head(10), use_container_width=True)
-else:
-    st.info("No signals detected.")
+        mm_df, stats = simulate_money_management(signals, strategy=money_strategy)
+        comparison_results.append({"Strategy": strategy, **stats})
 
-# Plot chart
-st.subheader("📊 Chart")
-st.plotly_chart(plot_chart(df, asset), use_container_width=True)
-
-# Simulate money management
-st.subheader("💰 Money Management Simulation")
-if signals:
-    simulation_df, metrics = simulate_money_management(signals, strategy=money_mgmt,
-                                                       initial_balance=initial_balance,
-                                                       bet_size=bet_size)
-    st.dataframe(simulation_df.tail(10), use_container_width=True)
-
-    st.markdown("### 📉 Performance Metrics")
-    st.metric("Win Rate (%)", f"{metrics['Win Rate (%)']:.2f}")
-    st.metric("ROI (%)", f"{metrics['ROI (%)']:.2f}")
-    st.metric("Max Drawdown (%)", f"{metrics['Max Drawdown (%)']:.2f}")
-    st.metric("Profit Factor", f"{metrics['Profit Factor']:.2f}")
-else:
-    st.warning("No signals to simulate.")
+    if comparison_results:
+        st.subheader("📊 Strategy Comparison Results")
+        st.dataframe(pd.DataFrame(comparison_results))
