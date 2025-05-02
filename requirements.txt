@@ -3,3 +3,9 @@ pandas
 numpy
 plotly
 scikit-learn
+pandas_ta
+yfinance
+python-binance
+requests
+scipy
+matplotlib
