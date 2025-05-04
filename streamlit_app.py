@@ -1,75 +1,99 @@
-from binance import Client, ThreadedWebsocketManager, ThreadedDepthCacheManager
+import streamlit as st
+from binance import Client
 from binance.exceptions import BinanceAPIException
-import os
+import pandas as pd
 
-# Set your API credentials securely (avoid hardcoding!)
-api_key = os.getenv("BINANCE_API_KEY")
-api_secret = os.getenv("BINANCE_API_SECRET")
-client = Client(api_key, api_secret)
+st.set_page_config(page_title="Binance Dashboard", layout="wide", initial_sidebar_state="expanded")
 
-# === 1. Market Depth ===
-depth = client.get_order_book(symbol='BNBBTC')
-print(depth)
+st.markdown("""
+    <style>
+        body {
+            background-color: #0e1117;
+            color: white;
+        }
+        .stDataFrame, .stMetric, .stTextInput {
+            background-color: #0e1117;
+            color: white;
+        }
+    </style>
+""", unsafe_allow_html=True)
 
-# === 2. Test Buy Order ===
-test_order = client.create_test_order(
-    symbol='BNBBTC',
-    side=Client.SIDE_BUY,
-    type=Client.ORDER_TYPE_MARKET,
-    quantity=100
-)
+st.title("📊 Binance Market Dashboard")
 
-# === 3. All Symbol Prices ===
-prices = client.get_all_tickers()
-print(prices)
-
-# === 4. Withdrawals (REAL money, use with caution) ===
+# Load API keys from Streamlit secrets
 try:
-    result = client.withdraw(
-        coin='ETH',
-        address='<eth_address>',  # replace with actual ETH address
-        amount=100
-    )
-    print("Withdraw Success:", result)
-except BinanceAPIException as e:
-    print("Withdraw Error:", e)
+    API_KEY = st.secrets["binance"]["API_KEY"]
+    API_SECRET = st.secrets["binance"]["API_SECRET"]
+    client = Client(API_KEY, API_SECRET)
 
-# === 5. Withdrawal History ===
-withdrawals = client.get_withdraw_history()
-eth_withdrawals = client.get_withdraw_history(coin='ETH')
-print(withdrawals)
-print(eth_withdrawals)
+    # Check connectivity
+    client.ping()
+    st.sidebar.success("✅ Connected to Binance with API credentials.")
+    use_private = True
+except Exception as e:
+    st.sidebar.warning("⚠️ Using public access only (no API credentials or invalid key).")
+    client = Client()  # fallback with no keys
+    use_private = False
 
-# === 6. Get Deposit Address ===
-btc_address = client.get_deposit_address(coin='BTC')
-print("BTC Deposit Address:", btc_address)
+# --- Market Depth ---
+st.subheader("Order Book (Market Depth)")
+symbol = st.sidebar.text_input("Symbol (e.g., BTCUSDT)", value="BTCUSDT").upper()
+depth = {}
 
-# === 7. Historical Klines ===
-klines_day = client.get_historical_klines("BNBBTC", Client.KLINE_INTERVAL_1MINUTE, "1 day ago UTC")
-klines_month = client.get_historical_klines("ETHBTC", Client.KLINE_INTERVAL_30MINUTE, "1 Dec, 2017", "1 Jan, 2018")
-klines_week = client.get_historical_klines("NEOBTC", Client.KLINE_INTERVAL_1WEEK, "1 Jan, 2017")
+try:
+    depth = client.get_order_book(symbol=symbol)
+    bids = pd.DataFrame(depth['bids'], columns=['Price', 'Quantity']).astype(float)
+    asks = pd.DataFrame(depth['asks'], columns=['Price', 'Quantity']).astype(float)
 
-# === 8. Websocket Managers ===
-def handle_socket_message(msg):
-    print(f"Websocket message type: {msg['e']}")
-    print(msg)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("💰 Top 5 Bids")
+        st.dataframe(bids.head(), use_container_width=True)
+    with col2:
+        st.write("💸 Top 5 Asks")
+        st.dataframe(asks.head(), use_container_width=True)
+except Exception as e:
+    st.error(f"Error fetching order book for {symbol}: {e}")
 
-def handle_dcm_message(depth_cache):
-    print(f"Symbol: {depth_cache.symbol}")
-    print("Top 5 Bids:", depth_cache.get_bids()[:5])
-    print("Top 5 Asks:", depth_cache.get_asks()[:5])
-    print("Last Update:", depth_cache.update_time)
+# --- Price Ticker ---
+st.subheader("Live Symbol Prices")
+try:
+    prices = client.get_all_tickers()
+    df_prices = pd.DataFrame(prices)
+    st.dataframe(df_prices.head(20), use_container_width=True)
+except Exception as e:
+    st.error(f"Error fetching ticker prices: {e}")
 
-# Start Websocket
-twm = ThreadedWebsocketManager(api_key=api_key, api_secret=api_secret)
-twm.start()
-twm.start_kline_socket(callback=handle_socket_message, symbol='BNBBTC')
+# --- Historical Klines ---
+st.subheader("Historical Kline Data")
+interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d"], index=0)
+try:
+    klines = client.get_historical_klines(symbol, interval, "1 day ago UTC")
+    df_klines = pd.DataFrame(klines, columns=[
+        "Open Time", "Open", "High", "Low", "Close", "Volume",
+        "Close Time", "Quote Asset Volume", "Number of Trades",
+        "Taker Buy Base Vol", "Taker Buy Quote Vol", "Ignore"
+    ])
+    df_klines["Open Time"] = pd.to_datetime(df_klines["Open Time"], unit='ms')
+    df_klines = df_klines[["Open Time", "Open", "High", "Low", "Close", "Volume"]].astype({
+        "Open": float, "High": float, "Low": float, "Close": float, "Volume": float
+    })
+    st.line_chart(df_klines.set_index("Open Time")[["Open", "Close"]])
+except Exception as e:
+    st.error(f"Error fetching klines for {symbol}: {e}")
 
-# Start Depth Cache
-dcm = ThreadedDepthCacheManager()
-dcm.start()
-dcm.start_depth_cache(callback=handle_dcm_message, symbol='ETHBTC')
+# --- Withdrawals (Private Only) ---
+if use_private:
+    st.subheader("Withdrawal History (ETH)")
+    try:
+        eth_withdraws = client.get_withdraw_history(coin="ETH")
+        df_wd = pd.DataFrame(eth_withdraws)
+        if not df_wd.empty:
+            st.dataframe(df_wd[["amount", "address", "status", "applyTime"]].head(), use_container_width=True)
+        else:
+            st.info("No ETH withdrawals found.")
+    except BinanceAPIException as e:
+        st.warning(f"Could not fetch withdrawals: {e.message}")
+else:
+    st.info("🔒 API key required to view withdrawal history.")
 
-# Optional: Options Symbol Depth Cache
-options_symbol = 'BTC-210430-36000-C'  # make sure it's valid
-dcm.start_options_depth_cache(callback=handle_dcm_message, symbol=options_symbol)
