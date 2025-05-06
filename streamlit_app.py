@@ -1,99 +1,82 @@
-import streamlit as st
-from binance import Client
-from binance.exceptions import BinanceAPIException
-import pandas as pd
+import requests
+import time
 
-st.set_page_config(page_title="Binance Dashboard", layout="wide", initial_sidebar_state="expanded")
+BASE_URL = 'https://api.binance.com/api/v3'
 
-st.markdown("""
-    <style>
-        body {
-            background-color: #0e1117;
-            color: white;
-        }
-        .stDataFrame, .stMetric, .stTextInput {
-            background-color: #0e1117;
-            color: white;
-        }
-    </style>
-""", unsafe_allow_html=True)
+def get_price(symbol):
+    """Get current price for a trading pair"""
+    endpoint = f'/ticker/price'
+    params = {'symbol': symbol}
+    return _make_request(endpoint, params)
 
-st.title("📊 Binance Market Dashboard")
+def get_klines(symbol, interval, **kwargs):
+    """Get historical klines/candlestick data
+    Args:
+        symbol: trading pair (e.g., BTCUSDT)
+        interval: timeframe interval (e.g., 1m, 5m, 1h, 1d)
+        kwargs: optional parameters (limit, startTime, endTime)
+    """
+    endpoint = f'/klines'
+    params = {
+        'symbol': symbol,
+        'interval': interval,
+        **kwargs
+    }
+    return _make_request(endpoint, params)
 
-# Load API keys from Streamlit secrets
-try:
-    API_KEY = st.secrets["binance"]["API_KEY"]
-    API_SECRET = st.secrets["binance"]["API_SECRET"]
-    client = Client(API_KEY, API_SECRET)
+def get_orderbook(symbol, limit=100):
+    """Get order book data
+    Args:
+        symbol: trading pair
+        limit: number of orders to return (default 100, max 5000)
+    """
+    endpoint = f'/depth'
+    params = {'symbol': symbol, 'limit': limit}
+    return _make_request(endpoint, params)
 
-    # Check connectivity
-    client.ping()
-    st.sidebar.success("✅ Connected to Binance with API credentials.")
-    use_private = True
-except Exception as e:
-    st.sidebar.warning("⚠️ Using public access only (no API credentials or invalid key).")
-    client = Client()  # fallback with no keys
-    use_private = False
-
-# --- Market Depth ---
-st.subheader("Order Book (Market Depth)")
-symbol = st.sidebar.text_input("Symbol (e.g., BTCUSDT)", value="BTCUSDT").upper()
-depth = {}
-
-try:
-    depth = client.get_order_book(symbol=symbol)
-    bids = pd.DataFrame(depth['bids'], columns=['Price', 'Quantity']).astype(float)
-    asks = pd.DataFrame(depth['asks'], columns=['Price', 'Quantity']).astype(float)
-
-    col1, col2 = st.columns(2)
-    with col1:
-        st.write("💰 Top 5 Bids")
-        st.dataframe(bids.head(), use_container_width=True)
-    with col2:
-        st.write("💸 Top 5 Asks")
-        st.dataframe(asks.head(), use_container_width=True)
-except Exception as e:
-    st.error(f"Error fetching order book for {symbol}: {e}")
-
-# --- Price Ticker ---
-st.subheader("Live Symbol Prices")
-try:
-    prices = client.get_all_tickers()
-    df_prices = pd.DataFrame(prices)
-    st.dataframe(df_prices.head(20), use_container_width=True)
-except Exception as e:
-    st.error(f"Error fetching ticker prices: {e}")
-
-# --- Historical Klines ---
-st.subheader("Historical Kline Data")
-interval = st.selectbox("Interval", ["1m", "5m", "15m", "1h", "1d"], index=0)
-try:
-    klines = client.get_historical_klines(symbol, interval, "1 day ago UTC")
-    df_klines = pd.DataFrame(klines, columns=[
-        "Open Time", "Open", "High", "Low", "Close", "Volume",
-        "Close Time", "Quote Asset Volume", "Number of Trades",
-        "Taker Buy Base Vol", "Taker Buy Quote Vol", "Ignore"
-    ])
-    df_klines["Open Time"] = pd.to_datetime(df_klines["Open Time"], unit='ms')
-    df_klines = df_klines[["Open Time", "Open", "High", "Low", "Close", "Volume"]].astype({
-        "Open": float, "High": float, "Low": float, "Close": float, "Volume": float
-    })
-    st.line_chart(df_klines.set_index("Open Time")[["Open", "Close"]])
-except Exception as e:
-    st.error(f"Error fetching klines for {symbol}: {e}")
-
-# --- Withdrawals (Private Only) ---
-if use_private:
-    st.subheader("Withdrawal History (ETH)")
+def _make_request(endpoint, params=None):
+    """Handle API requests"""
     try:
-        eth_withdraws = client.get_withdraw_history(coin="ETH")
-        df_wd = pd.DataFrame(eth_withdraws)
-        if not df_wd.empty:
-            st.dataframe(df_wd[["amount", "address", "status", "applyTime"]].head(), use_container_width=True)
-        else:
-            st.info("No ETH withdrawals found.")
-    except BinanceAPIException as e:
-        st.warning(f"Could not fetch withdrawals: {e.message}")
-else:
-    st.info("🔒 API key required to view withdrawal history.")
+        response = requests.get(
+            BASE_URL + endpoint,
+            params=params,
+            timeout=5  # Timeout in seconds
+        )
+        response.raise_for_status()  # Raise exception for bad status codes
+        
+        return response.json()
+    
+    except requests.exceptions.RequestException as e:
+        print(f"Request failed: {e}")
+        return None
+    except ValueError as e:
+        print(f"Failed to parse JSON response: {e}")
+        return None
 
+# Example usage
+if __name__ == '__main__':
+    # Get current BTC price
+    btc_price = get_price('BTCUSDT')
+    print("Current BTC/USDT Price:", btc_price)
+
+    # Get ETH/BTC historical data (last 5 1-hour candles)
+    eth_klines = get_klines('ETHBTC', '1h', limit=5)
+    if eth_klines:
+        print("\nETH/BTC 1-hour Candles:")
+        for kline in eth_klines:
+            # Convert timestamp to readable format
+            timestamp = time.strftime('%Y-%m-%d %H:%M:%S', 
+                                    time.localtime(kline[0]/1000))
+            print(f"{timestamp} - Open: {kline[1]} High: {kline[2]} "
+                f"Low: {kline[3]} Close: {kline[4]}")
+
+    # Get BTCUSDT order book
+    order_book = get_orderbook('BTCUSDT', limit=10)
+    if order_book:
+        print("\nBTC/USDT Order Book (Top 10):")
+        print("Bids:")
+        for bid in order_book['bids']:
+            print(f"Price: {bid[0]} Quantity: {bid[1]}")
+        print("\nAsks:")
+        for ask in order_book['asks']:
+            print(f"Price: {ask[0]} Quantity: {ask[1]}")
