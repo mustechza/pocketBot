@@ -6,8 +6,10 @@ import plotly.graph_objects as go
 from PIL import Image
 
 # Binance API credentials
-API_KEY = ''
-API_SECRET = ''
+API_KEY = "MhSFDGReh9WuilTZikVwW51OGujElIzOilRAoX7sgywPS4YMc5m0FQB67EWU0xfR"
+API_SECRET = "j7BiDhZgKhaHIlPzNjv5KxQhwn3l0tWPGeVjUexNED4c3b3yEgoIwPMNgdR8nHi7"
+# API_KEY = ''
+# API_SECRET = ''
 
 # Initialize Binance client
 client = Client(API_KEY, API_SECRET)
