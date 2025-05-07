@@ -1,63 +1,93 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from binance.client import Client
+import requests
+import time
+from datetime import datetime, timedelta
 import plotly.graph_objects as go
-from PIL import Image
 
-# Streamlit layout
+# Set Streamlit page configuration
 st.set_page_config(layout="wide")
 
-# Sidebar setup
-st.sidebar.title("Binance Data")
-#image_sidebar = Image.open("Pic1.png")  # Sidebar image
-#st.sidebar.image(image_sidebar, use_column_width=True)
+# Sidebar - API credentials
+st.sidebar.title("Bybit API Credentials")
+api_key = st.sidebar.text_input("API Key", type="password")
+api_secret = st.sidebar.text_input("API Secret", type="password")
 
-# Secure API Key inputs
-API_KEY = st.sidebar.text_input("Binance API Key", type="password")
-API_SECRET = st.sidebar.text_input("Binance API Secret", type="password")
+# Sidebar - Trading parameters
+st.sidebar.title("Trading Parameters")
+symbol = st.sidebar.text_input("Symbol", "BTCUSDT").upper()
+interval = st.sidebar.selectbox("Interval", options=["1", "3", "5", "15", "30", "60", "120", "240", "360", "720", "D", "W", "M"], index=5)
+lookback_days = st.sidebar.number_input("Lookback Period (days)", min_value=1, max_value=365, value=1)
 
-# Trading pair inputs
-symbol = st.sidebar.text_input("Symbol", "BTCUSDT")
-interval = st.sidebar.selectbox("Interval", options=["1m", "5m", "15m", "1h", "4h", "1d"], index=3)
-lookback = st.sidebar.text_input("Lookback", "1 day ago UTC")
+# Function to fetch historical klines from Bybit
+def get_historical_klines(symbol, interval, lookback_days):
+    """
+    Fetch historical klines (candlestick) data from Bybit.
 
-# Main page image
-#image_main = Image.open("Pic2.png")
-#st.image(image_main, use_column_width=True)
+    :param symbol: Trading pair symbol (e.g., 'BTCUSDT')
+    :param interval: Timeframe for candlesticks (e.g., '1', '5', '15', '60', 'D')
+    :param lookback_days: Number of days to look back
+    :return: Pandas DataFrame with OHLCV data
+    """
+    base_url = "https://api.bybit.com"
+    endpoint = "/v5/market/kline"
+    url = base_url + endpoint
 
-# Remove extra space at the top
-st.markdown("<style> .css-18e3th9 { padding-top: 0; } </style>", unsafe_allow_html=True)
+    end_time = int(time.time() * 1000)
+    start_time = end_time - (lookback_days * 24 * 60 * 60 * 1000)
 
-# Function to fetch Binance candlestick data
-def get_historical_klines(api_key, api_secret, symbol, interval, lookback):
+    params = {
+        "category": "linear",
+        "symbol": symbol,
+        "interval": interval,
+        "start": start_time,
+        "end": end_time,
+        "limit": 1000
+    }
+
     try:
-        client = Client(api_key, api_secret)
-        klines = client.get_historical_klines(symbol, interval, lookback)
-        df = pd.DataFrame(klines, columns=[
-            'timestamp', 'open', 'high', 'low', 'close', 'volume',
-            'close_time', 'quote_asset_volume', 'number_of_trades',
-            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+        response = requests.get(url, params=params)
+        data = response.json()
+
+        if data["retCode"] != 0:
+            raise Exception(f"API Error: {data['retMsg']}")
+
+        df = pd.DataFrame(data["result"]["list"], columns=[
+            "timestamp", "open", "high", "low", "close", "volume", "turnover"
         ])
-        df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
+
+        df["timestamp"] = pd.to_datetime(df["timestamp"], unit='ms')
+        df.set_index("timestamp", inplace=True)
         df = df.astype(float)
+
         return df
     except Exception as e:
         raise Exception(f"Error fetching data: {e}")
 
-# Function to calculate EMAs
+# Function to add EMAs to the DataFrame
 def add_ema(df, periods=[20, 50, 100, 200]):
+    """
+    Add Exponential Moving Averages (EMAs) to the DataFrame.
+
+    :param df: DataFrame with price data
+    :param periods: List of periods for EMAs
+    :return: DataFrame with added EMA columns
+    """
     for period in periods:
         df[f'EMA_{period}'] = df['close'].ewm(span=period, adjust=False).mean()
     return df
 
-# Function to plot chart
+# Function to plot candlestick chart with EMAs
 def plot_data_with_ema(df):
+    """
+    Create an interactive Plotly plot with candlestick data and EMAs.
+
+    :param df: DataFrame with price and EMA data
+    """
     fig = go.Figure()
 
-    # Candlesticks
+    # Add candlestick chart
     fig.add_trace(go.Candlestick(
         x=df.index,
         open=df['open'],
@@ -67,7 +97,7 @@ def plot_data_with_ema(df):
         name='Candlesticks'
     ))
 
-    # EMAs
+    # Add EMAs
     for ema_period in [20, 50, 100, 200]:
         fig.add_trace(go.Scatter(
             x=df.index,
@@ -76,8 +106,9 @@ def plot_data_with_ema(df):
             name=f'EMA {ema_period}'
         ))
 
+    # Customize layout
     fig.update_layout(
-        title="Candlestick Chart with EMAs",
+        title=f"{symbol} Candlestick Chart with EMAs",
         xaxis_title="Time",
         yaxis_title="Price",
         xaxis_rangeslider_visible=False
@@ -85,72 +116,41 @@ def plot_data_with_ema(df):
 
     st.plotly_chart(fig, use_container_width=True)
 
-# Fetch and display data
-if API_KEY and API_SECRET:
-    try:
-        df = get_historical_klines(API_KEY, API_SECRET, symbol, interval, lookback)
-        df = add_ema(df)
+# Main application
+st.title("Bybit Candlestick Chart with EMAs")
 
-        st.markdown("<h1 style='text-align: center; margin-bottom: 30px;'>Binance API Analysis</h1>", unsafe_allow_html=True)
+# Fetch and process data
+try:
+    df = get_historical_klines(symbol, interval, lookback_days)
+    df = add_ema(df)
 
-        # Current values
-        current_price = df['close'].iloc[-1]
-        ema_20 = df['EMA_20'].iloc[-1]
-        ema_50 = df['EMA_50'].iloc[-1]
-        ema_100 = df['EMA_100'].iloc[-1]
-        ema_200 = df['EMA_200'].iloc[-1]
+    # Display latest price and EMAs
+    current_price = df['close'].iloc[-1]
+    ema_20 = df['EMA_20'].iloc[-1]
+    ema_50 = df['EMA_50'].iloc[-1]
+    ema_100 = df['EMA_100'].iloc[-1]
+    ema_200 = df['EMA_200'].iloc[-1]
 
-        col1, col2, col3, col4, col5 = st.columns(5)
+    # Display metrics in columns
+    col1, col2, col3, col4, col5 = st.columns(5)
 
-        with col1:
-            st.markdown(
-                f"""
-                <div style="background-color: #d4edda; padding: 10px; border-radius: 5px; text-align: center;">
-                    <h3>Current Price</h3>
-                    <p style="font-size: 24px; font-weight: bold;">${current_price:,.6f}</p>
-                </div>
-                """, unsafe_allow_html=True)
+    with col1:
+        st.metric(label="Current Price", value=f"${current_price:,.2f}")
 
-        with col2:
-            st.markdown(
-                f"""
-                <div style="background-color: #f8f9fa; padding: 10px; border-radius: 5px; text-align: center;">
-                    <h3>EMA 20</h3>
-                    <p style="font-size: 24px; font-weight: bold;">${ema_20:,.6f}</p>
-                </div>
-                """, unsafe_allow_html=True)
+    with col2:
+        st.metric(label="EMA 20", value=f"${ema_20:,.2f}")
 
-        with col3:
-            st.markdown(
-                f"""
-                <div style="background-color: #f8f9fa; padding: 10px; border-radius: 5px; text-align: center;">
-                    <h3>EMA 50</h3>
-                    <p style="font-size: 24px; font-weight: bold;">${ema_50:,.6f}</p>
-                </div>
-                """, unsafe_allow_html=True)
+    with col3:
+        st.metric(label="EMA 50", value=f"${ema_50:,.2f}")
 
-        with col4:
-            st.markdown(
-                f"""
-                <div style="background-color: #f8f9fa; padding: 10px; border-radius: 5px; text-align: center;">
-                    <h3>EMA 100</h3>
-                    <p style="font-size: 24px; font-weight: bold;">${ema_100:,.6f}</p>
-                </div>
-                """, unsafe_allow_html=True)
+    with col4:
+        st.metric(label="EMA 100", value=f"${ema_100:,.2f}")
 
-        with col5:
-            st.markdown(
-                f"""
-                <div style="background-color: #f8f9fa; padding: 10px; border-radius: 5px; text-align: center;">
-                    <h3>EMA 200</h3>
-                    <p style="font-size: 24px; font-weight: bold;">${ema_200:,.6f}</p>
-                </div>
-                """, unsafe_allow_html=True)
+    with col5:
+        st.metric(label="EMA 200", value=f"${ema_200:,.2f}")
 
-        # Plot
-        plot_data_with_ema(df)
+    # Plot chart
+    plot_data_with_ema(df)
 
-    except Exception as e:
-        st.error(f"Error: {e}")
-else:
-    st.warning("Please enter your Binance API Key and Secret in the sidebar.")
+except Exception as e:
+    st.error(f"Error: {e}")
