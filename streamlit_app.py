@@ -11,7 +11,7 @@ st.set_page_config(layout="wide")
 # Sidebar setup
 st.sidebar.title("Binance Data")
 #image_sidebar = Image.open("Pic1.png")  # Sidebar image
-st.sidebar.image(image_sidebar, use_column_width=True)
+#st.sidebar.image(image_sidebar, use_column_width=True)
 
 # Secure API Key inputs
 API_KEY = st.sidebar.text_input("Binance API Key", type="password")
