@@ -23,8 +23,8 @@ interval = st.sidebar.selectbox("Interval", options=["1m", "5m", "15m", "1h", "4
 lookback = st.sidebar.text_input("Lookback", "1 day ago UTC")
 
 # Main page image
-image_main = Image.open("Pic2.png")
-st.image(image_main, use_column_width=True)
+#image_main = Image.open("Pic2.png")
+#st.image(image_main, use_column_width=True)
 
 # Remove extra space at the top
 st.markdown("<style> .css-18e3th9 { padding-top: 0; } </style>", unsafe_allow_html=True)
