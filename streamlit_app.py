@@ -8,6 +8,8 @@ import plotly.graph_objects as go
 
 # Set Streamlit page configuration
 st.set_page_config(layout="wide")
+#sec PCSouWjnqB7U7dAVaZyA0Ir08rYhDSI4dtxO
+#key AdTPBtsa7H8NHvz84I
 
 # Sidebar - API credentials
 st.sidebar.title("Bybit API Credentials")
