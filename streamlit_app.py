@@ -1,51 +1,110 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objs as go
-from signal_strategies import ema_crossover_signal
-from binance_ws import start_kline_socket, klines
-from utils import log_signal, read_signal_log
-import time
+import websocket, json, time
+import pandas_ta as ta
+from threading import Thread
+from datetime import datetime
 
-st.set_page_config(page_title="Binance Signal Dashboard", layout="wide")
-st.title("📈 Binance Live EMA Signals")
+# Streamlit config
+st.set_page_config(page_title="Binance WebSocket Signal App", layout="wide")
+st.title("📡 Binance Live Signal Dashboard")
 
-symbol = st.sidebar.selectbox("Symbol", ["btcusdt", "ethusdt", "bnbusdt"])
-interval = st.sidebar.selectbox("Interval", ["1m", "3m", "5m", "15m"])
+# --- Sidebar Controls ---
+symbol = st.sidebar.selectbox("Symbol", ["btcusdt", "ethusdt", "bnbusdt"], index=0)
+interval = st.sidebar.selectbox("Interval", ["1m", "3m", "5m", "15m"], index=0)
 refresh_rate = st.sidebar.slider("Refresh every (sec)", 5, 60, 15)
 
-# Start WebSocket only once
-if "started" not in st.session_state:
-    start_kline_socket(symbol, interval)
-    st.session_state.started = True
+# --- Global Storage ---
+if "klines" not in st.session_state:
+    st.session_state.klines = []
 
-# Wait for candles
-if len(klines) < 10:
-    st.warning("Waiting for live data...")
+# --- WebSocket Client ---
+def start_kline_socket(symbol, interval, limit=100):
+    url = f"wss://stream.binance.com:9443/ws/{symbol}@kline_{interval}"
+
+    def on_message(ws, message):
+        data = json.loads(message)
+        k = data['k']
+        candle = {
+            'time': pd.to_datetime(k['t'], unit='ms'),
+            'open': float(k['o']),
+            'high': float(k['h']),
+            'low': float(k['l']),
+            'close': float(k['c']),
+            'volume': float(k['v'])
+        }
+
+        # Update or append
+        if st.session_state.klines and st.session_state.klines[-1]['time'] == candle['time']:
+            st.session_state.klines[-1] = candle
+        else:
+            st.session_state.klines.append(candle)
+            if len(st.session_state.klines) > limit:
+                st.session_state.klines.pop(0)
+
+    def on_error(ws, error): print("WebSocket error:", error)
+    def on_close(ws, *args): print("WebSocket closed")
+    def on_open(ws): print("WebSocket connected")
+
+    ws = websocket.WebSocketApp(url, on_message=on_message, on_error=on_error, on_close=on_close, on_open=on_open)
+    thread = Thread(target=ws.run_forever)
+    thread.daemon = True
+    thread.start()
+
+# Start socket once
+if "ws_started" not in st.session_state:
+    start_kline_socket(symbol, interval)
+    st.session_state.ws_started = True
+
+# --- Wait for data ---
+if len(st.session_state.klines) < 10:
+    st.warning("Waiting for live candles...")
     st.stop()
 
-df = pd.DataFrame(klines)
-signal = ema_crossover_signal(df)
+# --- Convert to DataFrame ---
+df = pd.DataFrame(st.session_state.klines)
+df['ema_fast'] = ta.ema(df['close'], length=5)
+df['ema_slow'] = ta.ema(df['close'], length=13)
+
+# --- EMA Crossover Signal ---
+def ema_signal(df):
+    if df['ema_fast'].iloc[-2] < df['ema_slow'].iloc[-2] and df['ema_fast'].iloc[-1] > df['ema_slow'].iloc[-1]:
+        return "BUY"
+    elif df['ema_fast'].iloc[-2] > df['ema_slow'].iloc[-2] and df['ema_fast'].iloc[-1] < df['ema_slow'].iloc[-1]:
+        return "SELL"
+    return None
+
+signal = ema_signal(df)
+timestamp = df['time'].iloc[-1]
+
+# --- Signal Log ---
+def log_signal_to_file(signal):
+    with open("signals.log", "a") as f:
+        f.write(f"{datetime.now()} - {signal}\n")
 
 if signal:
-    st.success(f"{signal} signal at {df['time'].iloc[-1]}")
-    log_signal(f"{signal} at {df['time'].iloc[-1]}")
+    st.success(f"**{signal} signal at {timestamp}**")
+    log_signal_to_file(f"{signal} at {timestamp}")
 else:
-    st.info(f"No signal at {df['time'].iloc[-1]}")
+    st.info(f"No signal at {timestamp}")
 
-# Plot
-df['ema_fast'] = df['close'].ewm(span=5).mean()
-df['ema_slow'] = df['close'].ewm(span=13).mean()
-
+# --- Chart ---
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=df['time'], y=df['close'], name="Close"))
-fig.add_trace(go.Scatter(x=df['time'], y=df['ema_fast'], name="EMA 5"))
-fig.add_trace(go.Scatter(x=df['time'], y=df['ema_slow'], name="EMA 13"))
-fig.update_layout(height=400, title=f"{symbol.upper()} Live Chart", xaxis_title="Time")
-
+fig.add_trace(go.Scatter(x=df['time'], y=df['close'], name='Close', line=dict(color='white')))
+fig.add_trace(go.Scatter(x=df['time'], y=df['ema_fast'], name='EMA 5', line=dict(color='blue')))
+fig.add_trace(go.Scatter(x=df['time'], y=df['ema_slow'], name='EMA 13', line=dict(color='orange')))
+fig.update_layout(title=f"{symbol.upper()} Live Price", height=400, xaxis_title="Time", yaxis_title="Price")
 st.plotly_chart(fig, use_container_width=True)
 
+# --- Signal History ---
 with st.expander("📘 Signal Log"):
-    st.text(read_signal_log())
+    try:
+        with open("signals.log", "r") as f:
+            st.text(f.read())
+    except FileNotFoundError:
+        st.info("No signals logged yet.")
 
+# --- Auto-refresh ---
 time.sleep(refresh_rate)
 st.experimental_rerun()
