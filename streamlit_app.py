@@ -1,184 +1,249 @@
 import streamlit as st
-import pandas as pd
-import numpy as np
-from binance.client import Client
-import plotly.graph_objects as go
-from PIL import Image
-
-# Binance API credentials
-API_KEY = ''
-API_SECRET = ''
-
-# Initialize Binance client
-client = Client(API_KEY, API_SECRET)
-
-def get_historical_klines(symbol, interval, lookback):
-    """
-    Fetch historical klines (candlestick) data from Binance.
-
-    :param symbol: Trading pair symbol (e.g., 'BTCUSDT')
-    :param interval: Timeframe for candlesticks (e.g., '1h', '1d')
-    :param lookback: Lookback period (e.g., '1 day ago UTC')
-    :return: Pandas DataFrame with OHLCV data
-    """
-    try:
-        klines = client.get_historical_klines(symbol, interval, lookback)
-        df = pd.DataFrame(klines, columns=[
-            'timestamp', 'open', 'high', 'low', 'close', 'volume', 
-            'close_time', 'quote_asset_volume', 'number_of_trades', 
-            'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
-        ])
-        df = df[['timestamp', 'open', 'high', 'low', 'close', 'volume']]
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df.set_index('timestamp', inplace=True)
-        df = df.astype(float)
-        return df
-    except Exception as e:
-        raise Exception(f"Error fetching data: {e}")
-
-def add_ema(df, periods=[20, 50, 100, 200]):
-    """
-    Add Exponential Moving Averages (EMAs) to the DataFrame.
-
-    :param df: DataFrame with price data
-    :param periods: List of periods for EMAs
-    :return: DataFrame with added EMA columns
-    """
-    for period in periods:
-        df[f'EMA_{period}'] = df['close'].ewm(span=period, adjust=False).mean()
-    return df
-
-def plot_data_with_ema(df):
-    """
-    Create an interactive Plotly plot with candlestick data and EMAs.
-
-    :param df: DataFrame with price and EMA data
-    """
-    fig = go.Figure()
-
-    # Add candlestick chart
-    fig.add_trace(go.Candlestick(
-        x=df.index,
-        open=df['open'],
-        high=df['high'],
-        low=df['low'],
-        close=df['close'],
-        name='Candlesticks'
-    ))
-
-    # Add EMAs
-    for ema_period in [20, 50, 100, 200]:
-        fig.add_trace(go.Scatter(
-            x=df.index,
-            y=df[f'EMA_{ema_period}'],
-            mode='lines',
-            name=f'EMA {ema_period}'
-        ))
-
-    # Customize layout
-    fig.update_layout(
-        title="Candlestick Chart with EMAs",
-        xaxis_title="Time",
-        yaxis_title="Price",
-        xaxis_rangeslider_visible=False
-    )
-
-    st.plotly_chart(fig, use_container_width=True)
-
-# Streamlit layout
 st.set_page_config(layout="wide")
 
-# Sidebar setup
-st.sidebar.title("Binance Data")
-image_sidebar = Image.open("Pic1.png")  # Sidebar image
-st.sidebar.image(image_sidebar, use_column_width=True)
+import pandas as pd
+import numpy as np
+import requests
+import plotly.graph_objects as go
+import datetime
+from streamlit_autorefresh import st_autorefresh
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.model_selection import train_test_split
+import streamlit.components.v1 as components
 
-symbol = st.sidebar.text_input("Symbol", "BTCUSDT")
-interval = st.sidebar.selectbox("Interval", options=["1m", "5m", "15m", "1h", "4h", "1d"], index=3)
-lookback = st.sidebar.text_input("Lookback", "1 day ago UTC")
 
-# Main page setup
-image_main = Image.open("Pic2.png")  # Main page image
-st.image(image_main, use_column_width=True)
 
-# Remove extra space at the top
-st.markdown("<style> .css-18e3th9 { padding-top: 0; } </style>", unsafe_allow_html=True)
+# --- SETTINGS ---
+REFRESH_INTERVAL = 10  # seconds
+CANDLE_LIMIT = 500
+BINANCE_URL = "https://api.binance.com/api/v3/klines"
+ASSETS = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "BNBUSDT", "XRPUSDT", "LTCUSDT"]
 
-# Fetch and process data
-try:
-    df = get_historical_klines(symbol, interval, lookback)
-    df = add_ema(df)
+# --- AUTO REFRESH ---
+st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
 
-    # Main Title
-    st.markdown("<h1 style='text-align: center; margin-bottom: 30px;'>Binance API Analysis</h1>", unsafe_allow_html=True)
+# --- SIDEBAR: Parameter Inputs ---
+uploaded_file = st.sidebar.file_uploader("Upload historical data (CSV)", type=["csv"])
+selected_assets = st.sidebar.multiselect("Select Assets", ASSETS, default=ASSETS[:2])
+selected_strategy = st.sidebar.selectbox("Strategy", [
+    "EMA Cross", "RSI Divergence", "MACD Cross", "Bollinger Band Bounce",
+    "Stochastic Oscillator", "EMA + RSI Combined", "ML Model (Random Forest)"
+])
+money_strategy = st.sidebar.selectbox("Money Management", ["Flat", "Martingale"])
 
-    # Get current symbol price and latest EMAs
-    current_price = df['close'].iloc[-1]
-    ema_20 = df['EMA_20'].iloc[-1]
-    ema_50 = df['EMA_50'].iloc[-1]
-    ema_100 = df['EMA_100'].iloc[-1]
-    ema_200 = df['EMA_200'].iloc[-1]
+# Indicator parameter inputs
+ema_short = st.sidebar.number_input("EMA Short Period", 2, 50, value=5)
+ema_long = st.sidebar.number_input("EMA Long Period", 5, 100, value=20)
+rsi_period = st.sidebar.number_input("RSI Period", 5, 50, value=14)
+stoch_period = st.sidebar.number_input("Stochastic Period", 5, 50, value=14)
+bb_period = st.sidebar.number_input("Bollinger Band Period", 5, 50, value=20)
 
-    # Display metrics in columns
-    col1, col2, col3, col4, col5 = st.columns(5)
+# --- FUNCTIONS ---
+def fetch_candles(symbol, interval="1m", limit=500):
+    try:
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
+        response = requests.get(BINANCE_URL, params=params, timeout=10)
+        data = response.json()
+        df = pd.DataFrame(data, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume',
+            'close_time', 'qav', 'num_trades', 'taker_base_vol', 'taker_quote_vol', 'ignore'
+        ])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].astype(float)
+        return df
+    except Exception as e:
+        st.warning(f"Fetching data failed: {e}")
+        return None
 
-    with col1:
-        st.markdown(
-            f"""
-            <div style="background-color: #d4edda; padding: 10px; border-radius: 5px; text-align: center;">
-                <h3>Current Price</h3>
-                <p style="font-size: 24px; font-weight: bold;">${current_price:,.6f}</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+def calculate_indicators(df):
+    df['EMA5'] = df['close'].ewm(span=ema_short, adjust=False).mean()
+    df['EMA20'] = df['close'].ewm(span=ema_long, adjust=False).mean()
 
-    with col2:
-        st.markdown(
-            f"""
-            <div style="background-color: #f8f9fa; padding: 10px; border-radius: 5px; text-align: center;">
-                <h3>EMA 20</h3>
-                <p style="font-size: 24px; font-weight: bold;">${ema_20:,.6f}</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    delta = df['close'].diff()
+    gain = (delta.where(delta > 0, 0)).rolling(window=rsi_period).mean()
+    loss = (-delta.where(delta < 0, 0)).rolling(window=rsi_period).mean()
+    rs = gain / loss
+    df['RSI'] = 100 - (100 / (1 + rs))
 
-    with col3:
-        st.markdown(
-            f"""
-            <div style="background-color: #f8f9fa; padding: 10px; border-radius: 5px; text-align: center;">
-                <h3>EMA 50</h3>
-                <p style="font-size: 24px; font-weight: bold;">${ema_50:,.6f}</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    df['MACD'] = df['close'].ewm(span=12, adjust=False).mean() - df['close'].ewm(span=26, adjust=False).mean()
+    df['MACD_signal'] = df['MACD'].ewm(span=9, adjust=False).mean()
 
-    with col4:
-        st.markdown(
-            f"""
-            <div style="background-color: #f8f9fa; padding: 10px; border-radius: 5px; text-align: center;">
-                <h3>EMA 100</h3>
-                <p style="font-size: 24px; font-weight: bold;">${ema_100:,.6f}</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    df['BB_upper'] = df['close'].rolling(window=bb_period).mean() + 2 * df['close'].rolling(window=bb_period).std()
+    df['BB_lower'] = df['close'].rolling(window=bb_period).mean() - 2 * df['close'].rolling(window=bb_period).std()
 
-    with col5:
-        st.markdown(
-            f"""
-            <div style="background-color: #f8f9fa; padding: 10px; border-radius: 5px; text-align: center;">
-                <h3>EMA 200</h3>
-                <p style="font-size: 24px; font-weight: bold;">${ema_200:,.6f}</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    low_min = df['low'].rolling(window=stoch_period).min()
+    high_max = df['high'].rolling(window=stoch_period).max()
+    df['Stochastic'] = (df['close'] - low_min) / (high_max - low_min) * 100
 
-    # Plot chart below metrics
-    plot_data_with_ema(df)
+    return df
 
-except Exception as e:
-    st.error(f"Error: {e}")
+def generate_signal(timestamp, signal_type, price):
+    duration = 5
+    return {
+        "Time": timestamp,
+        "Signal": signal_type,
+        "Price": price,
+        "Trade Duration (min)": duration
+    }
+
+def detect_signals(df, strategy):
+    signals = []
+    for i in range(1, len(df)):
+        t = df['timestamp'].iloc[i]
+        price = df['close'].iloc[i]
+
+        if strategy == "EMA Cross":
+            if df['EMA5'].iloc[i-1] < df['EMA20'].iloc[i-1] and df['EMA5'].iloc[i] > df['EMA20'].iloc[i]:
+                signals.append(generate_signal(t, "Buy (EMA Cross)", price))
+            elif df['EMA5'].iloc[i-1] > df['EMA20'].iloc[i-1] and df['EMA5'].iloc[i] < df['EMA20'].iloc[i]:
+                signals.append(generate_signal(t, "Sell (EMA Cross)", price))
+
+        elif strategy == "RSI Divergence":
+            rsi = df['RSI'].iloc[i]
+            if rsi < 30:
+                signals.append(generate_signal(t, "Buy (RSI Oversold)", price))
+            elif rsi > 70:
+                signals.append(generate_signal(t, "Sell (RSI Overbought)", price))
+
+        elif strategy == "MACD Cross":
+            if df['MACD'].iloc[i-1] < df['MACD_signal'].iloc[i-1] and df['MACD'].iloc[i] > df['MACD_signal'].iloc[i]:
+                signals.append(generate_signal(t, "Buy (MACD Cross)", price))
+            elif df['MACD'].iloc[i-1] > df['MACD_signal'].iloc[i-1] and df['MACD'].iloc[i] < df['MACD_signal'].iloc[i]:
+                signals.append(generate_signal(t, "Sell (MACD Cross)", price))
+
+        elif strategy == "Bollinger Band Bounce":
+            if df['close'].iloc[i] < df['BB_lower'].iloc[i]:
+                signals.append(generate_signal(t, "Buy (BB Lower)", price))
+            elif df['close'].iloc[i] > df['BB_upper'].iloc[i]:
+                signals.append(generate_signal(t, "Sell (BB Upper)", price))
+
+        elif strategy == "Stochastic Oscillator":
+            stoch = df['Stochastic'].iloc[i]
+            if stoch < 20:
+                signals.append(generate_signal(t, "Buy (Stochastic)", price))
+            elif stoch > 80:
+                signals.append(generate_signal(t, "Sell (Stochastic)", price))
+
+        elif strategy == "EMA + RSI Combined":
+            if df['EMA5'].iloc[i-1] < df['EMA20'].iloc[i-1] and df['EMA5'].iloc[i] > df['EMA20'].iloc[i] and df['RSI'].iloc[i] < 40:
+                signals.append(generate_signal(t, "Buy (EMA+RSI)", price))
+            elif df['EMA5'].iloc[i-1] > df['EMA20'].iloc[i-1] and df['EMA5'].iloc[i] < df['EMA20'].iloc[i] and df['RSI'].iloc[i] > 60:
+                signals.append(generate_signal(t, "Sell (EMA+RSI)", price))
+    return signals
+
+def train_ml_model(df):
+    df = df.copy()
+    df['target'] = (df['close'].shift(-2) > df['close']).astype(int)
+    features = ['EMA5', 'EMA20', 'RSI', 'MACD', 'MACD_signal', 'BB_upper', 'BB_lower', 'Stochastic']
+    df = df.dropna(subset=features + ['target'])
+
+    X = df[features]
+    y = df['target']
+    model = RandomForestClassifier(n_estimators=100, random_state=42)
+    model.fit(X, y)
+
+    df['ML_Prediction'] = model.predict(X)
+    df['Signal'] = df['ML_Prediction'].map({1: 'Buy (ML)', 0: 'Sell (ML)'})
+    df['Trade Duration (min)'] = 2
+
+    return df[['timestamp', 'Signal', 'close', 'Trade Duration (min)']].rename(columns={'close': 'Price'})
+
+def simulate_money_management(signals, strategy="Flat", initial_balance=1000, bet_size=10):
+    balance = initial_balance
+    last_bet = bet_size
+    wins, losses, pnl = 0, 0, []
+
+    result_log = []
+    for s in signals:
+        win = np.random.choice([True, False], p=[0.55, 0.45])
+        if win:
+            balance += last_bet
+            result = "Win"
+            wins += 1
+            last_bet = bet_size
+        else:
+            balance -= last_bet
+            result = "Loss"
+            losses += 1
+            if strategy == "Martingale":
+                last_bet *= 2
+        pnl.append(balance)
+        result_log.append({
+            "Time": s["Time"], "Signal": s["Signal"], "Result": result,
+            "Balance": balance, "Trade Duration (min)": s["Trade Duration (min)"]
+        })
+
+    df = pd.DataFrame(result_log)
+    max_drawdown = ((df['Balance'].cummax() - df['Balance']) / df['Balance'].cummax()).max()
+    roi = ((balance - initial_balance) / initial_balance) * 100
+    profit_factor = (wins * bet_size) / max(losses * bet_size, 1)
+
+    return df, {
+        "Win Rate (%)": 100 * wins / (wins + losses),
+        "ROI (%)": roi,
+        "Max Drawdown (%)": 100 * max_drawdown,
+        "Profit Factor": profit_factor
+    }
+
+def plot_chart(df, asset):
+    fig = go.Figure()
+    fig.add_trace(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Candles'))
+    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['EMA5'], name="EMA5", line=dict(color='blue')))
+    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['EMA20'], name="EMA20", line=dict(color='red')))
+    fig.update_layout(title=asset, xaxis_rangeslider_visible=False)
+    return fig
+
+def show_browser_alert(message):
+    js_code = f"""
+    <script>
+    alert("{message}");
+    </script>
+    """
+    components.html(js_code)
+
+# --- TITLE ---
+st.title("📈 Pocket Option Signals | Live + Backtest + Money Management")
+
+# --- BACKTESTING ---
+if uploaded_file:
+    df = pd.read_csv(uploaded_file)
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df = calculate_indicators(df)
+
+    if selected_strategy == "ML Model (Random Forest)":
+        signals = train_ml_model(df).to_dict(orient='records')
+    else:
+        signals = detect_signals(df, selected_strategy)
+
+    st.subheader("📊 Backtest Results")
+    st.dataframe(pd.DataFrame(signals))
+    
+    st.subheader("📌 Trade Recommendations Summary")
+    for s in signals[-5:]:
+        st.markdown(f"📍 **{s['Signal']}** at {s['Time'].strftime('%H:%M')} for {s['Trade Duration (min)']} min – Price: {s['Price']}")
+
+    st.subheader("💰 Money Management Simulation")
+    results_df, metrics = simulate_money_management(signals, strategy=money_strategy)
+    st.dataframe(results_df)
+
+    st.subheader("📈 Performance Metrics")
+    st.metric("Win Rate (%)", f"{metrics['Win Rate (%)']:.2f}")
+    st.metric("ROI (%)", f"{metrics['ROI (%)']:.2f}")
+    st.metric("Max Drawdown (%)", f"{metrics['Max Drawdown (%)']:.2f}")
+    st.metric("Profit Factor", f"{metrics['Profit Factor']:.2f}")
+
+    st.plotly_chart(plot_chart(df, "Backtest Data"))
+
+# --- LIVE SIGNALS ---
+st.subheader("📡 Live Market Signal Detection")
+for asset in selected_assets:
+    df_live = fetch_candles(asset)
+    if df_live is not None:
+        df_live = calculate_indicators(df_live)
+        if selected_strategy != "ML Model (Random Forest)":
+            live_signals = detect_signals(df_live, selected_strategy)
+            if live_signals:
+                st.markdown(f"### {asset}")
+                st.dataframe(pd.DataFrame(live_signals[-5:]))
+                show_browser_alert(f"New signal for {asset}: {live_signals[-1]['Signal']}")
+        st.plotly_chart(plot_chart(df_live, asset), use_container_width=True)
