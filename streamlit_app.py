@@ -1,21 +1,17 @@
 import streamlit as st
-st.set_page_config(layout="wide")
-
 import pandas as pd
 import numpy as np
 import requests
 import plotly.graph_objects as go
-import datetime
 from streamlit_autorefresh import st_autorefresh
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.model_selection import train_test_split
 import streamlit.components.v1 as components
 
 # --- SETTINGS ---
 REFRESH_INTERVAL = 10  # seconds
-CANDLE_LIMIT = 200
-BYBIT_URL = "https://api.bybit.com/v5/market/kline"
-ASSETS = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "BNBUSDT", "XRPUSDT", "LTCUSDT"]
+CANDLE_LIMIT = 500
+BYBIT_URL = "https://api.bybit.com/v2/public/kline/list"
+ASSETS = ["BTCUSD", "ETHUSD", "XRPUSD", "SOLUSD", "ADAUSD", "LTCUSD"]
 
 # --- AUTO REFRESH ---
 st_autorefresh(interval=REFRESH_INTERVAL * 1000, key="refresh")
@@ -37,17 +33,15 @@ stoch_period = st.sidebar.number_input("Stochastic Period", 5, 50, value=14)
 bb_period = st.sidebar.number_input("Bollinger Band Period", 5, 50, value=20)
 
 # --- FUNCTIONS ---
-def fetch_candles(symbol, interval="1", limit=200):
+def fetch_candles(symbol, interval="1", limit=500):
     try:
-        params = {
-            "category": "linear",
-            "symbol": symbol,
-            "interval": interval,
-            "limit": str(limit)
-        }
+        params = {"symbol": symbol, "interval": interval, "limit": limit}
         response = requests.get(BYBIT_URL, params=params, timeout=10)
-        data = response.json().get("result", {}).get("list", [])
-        df = pd.DataFrame(data, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume', '_1', '_2', '_3'])
+        data = response.json()['result']
+        df = pd.DataFrame(data, columns=[
+            'timestamp', 'open', 'high', 'low', 'close', 'volume', 'close_time', 'quote_asset_volume',
+            'number_of_trades', 'taker_buy_base_asset_volume', 'taker_buy_quote_asset_volume', 'ignore'
+        ])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='s')
         df[['open', 'high', 'low', 'close']] = df[['open', 'high', 'low', 'close']].astype(float)
         return df
@@ -152,8 +146,8 @@ def simulate_money_management(signals, strategy="Flat", initial_balance=1000, be
     balance = initial_balance
     last_bet = bet_size
     wins, losses, pnl = 0, 0, []
-    result_log = []
 
+    result_log = []
     for s in signals:
         win = np.random.choice([True, False], p=[0.55, 0.45])
         if win:
@@ -169,11 +163,8 @@ def simulate_money_management(signals, strategy="Flat", initial_balance=1000, be
                 last_bet *= 2
         pnl.append(balance)
         result_log.append({
-            "Time": s["Time"],
-            "Signal": s["Signal"],
-            "Result": result,
-            "Balance": balance,
-            "Trade Duration (min)": s["Trade Duration (min)"]
+            "Time": s["Time"], "Signal": s["Signal"], "Result": result,
+            "Balance": balance, "Trade Duration (min)": s["Trade Duration (min)"]
         })
 
     df = pd.DataFrame(result_log)
@@ -189,64 +180,46 @@ def simulate_money_management(signals, strategy="Flat", initial_balance=1000, be
     }
 
 def plot_chart(df, asset):
-    fig = go.Figure()
-    fig.add_trace(go.Candlestick(x=df['timestamp'], open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Candles'))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['EMA5'], name="EMA5", line=dict(color='blue')))
-    fig.add_trace(go.Scatter(x=df['timestamp'], y=df['EMA20'], name="EMA20", line=dict(color='red')))
-    fig.update_layout(title=asset, xaxis_rangeslider_visible=False)
-    return fig
+    fig = go.Figure(data=[go.Candlestick(x=df['timestamp'],
+                                        open=df['open'],
+                                        high=df['high'],
+                                        low=df['low'],
+                                        close=df['close'],
+                                        name="Candlesticks")])
 
-def show_browser_alert(message):
-    js_code = f"""
-    <script>
-    alert("{message}");
-    </script>
-    """
-    components.html(js_code)
+    fig.update_layout(title=f"{asset} Price Data",
+                      xaxis_title="Time",
+                      yaxis_title="Price (USD)",
+                      xaxis_rangeslider_visible=False)
 
-# --- TITLE ---
-st.title("📈 Pocket Option Signals | Live + Backtest + Money Management")
+    st.plotly_chart(fig)
 
-# --- BACKTESTING ---
-if uploaded_file:
-    df = pd.read_csv(uploaded_file)
-    df['timestamp'] = pd.to_datetime(df['timestamp'])
-    df = calculate_indicators(df)
+# --- MAIN APP ---
+st.title("Pocket Option Signal Generator")
+st.sidebar.header("Select Assets and Parameters")
 
-    if selected_strategy == "ML Model (Random Forest)":
-        signals = train_ml_model(df).to_dict(orient='records')
-    else:
+# Fetch and display data
+asset_data = {}
+for asset in selected_assets:
+    df = fetch_candles(asset)
+    if df is not None:
+        df = calculate_indicators(df)
         signals = detect_signals(df, selected_strategy)
 
-    st.subheader("📊 Backtest Results")
-    st.dataframe(pd.DataFrame(signals))
-    
-    st.subheader("📌 Trade Recommendations Summary")
-    for s in signals[-5:]:
-        st.markdown(f"📍 **{s['Signal']}** at {s['Time'].strftime('%H:%M')} for {s['Trade Duration (min)']} min – Price: {s['Price']}")
+        st.subheader(f"{asset} Candlestick Chart")
+        plot_chart(df, asset)
 
-    st.subheader("💰 Money Management Simulation")
-    results_df, metrics = simulate_money_management(signals, strategy=money_strategy)
-    st.dataframe(results_df)
+        st.subheader(f"{asset} Signals")
+        signal_df = pd.DataFrame(signals)
+        st.dataframe(signal_df)
 
-    st.subheader("📈 Performance Metrics")
-    st.metric("Win Rate (%)", f"{metrics['Win Rate (%)']:.2f}")
-    st.metric("ROI (%)", f"{metrics['ROI (%)']:.2f}")
-    st.metric("Max Drawdown (%)", f"{metrics['Max Drawdown (%)']:.2f}")
-    st.metric("Profit Factor", f"{metrics['Profit Factor']:.2f}")
+        if selected_strategy == "ML Model (Random Forest)":
+            ml_df = train_ml_model(df)
+            st.subheader(f"ML-Based Signals for {asset}")
+            st.dataframe(ml_df)
 
-    st.plotly_chart(plot_chart(df, "Backtest Data"))
-
-# --- LIVE SIGNALS ---
-st.subheader("📡 Live Market Signal Detection")
-for asset in selected_assets:
-    df_live = fetch_candles(asset)
-    if df_live is not None:
-        df_live = calculate_indicators(df_live)
-        if selected_strategy != "ML Model (Random Forest)":
-            live_signals = detect_signals(df_live, selected_strategy)
-            if live_signals:
-                st.markdown(f"### {asset}")
-                st.dataframe(pd.DataFrame(live_signals[-5:]))
-                show_browser_alert(f"New signal for {asset}: {live_signals[-1]['Signal']}")
-        st.plotly_chart(plot_chart(df_live, asset), use_container_width=True)
+        if money_strategy != "Flat":
+            simulated_pnl, stats = simulate_money_management(signals, strategy=money_strategy)
+            st.subheader(f"Money Management Simulation ({money_strategy})")
+            st.dataframe(simulated_pnl)
+            st.write("Statistics:", stats)
