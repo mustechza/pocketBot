@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objs as go
 import websocket, json, time
-import pandas_ta as ta
 from threading import Thread
 from datetime import datetime
 
@@ -61,8 +60,8 @@ if len(st.session_state.klines) < 10:
 
 # Convert to DataFrame
 df = pd.DataFrame(st.session_state.klines)
-df['ema_fast'] = ta.ema(df['close'], length=5)
-df['ema_slow'] = ta.ema(df['close'], length=13)
+df['ema_fast'] = df['close'].ewm(span=5, adjust=False).mean()
+df['ema_slow'] = df['close'].ewm(span=13, adjust=False).mean()
 
 # EMA crossover logic
 def ema_signal(df):
