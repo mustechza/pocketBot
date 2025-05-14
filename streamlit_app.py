@@ -7,12 +7,12 @@ import pandas as pd
 import time
 
 # --- Setup Headless Chrome ---
-@st.cache_resource
 def get_driver():
     options = Options()
-    options.add_argument("--headless")
+    options.add_argument("--headless")  # Run in headless mode
     options.add_argument("--disable-gpu")
     options.add_argument("--no-sandbox")
+    options.add_argument("--disable-dev-shm-usage")
     driver = webdriver.Chrome(ChromeDriverManager().install(), options=options)
     return driver
 
