@@ -1,7 +1,3 @@
-streamlit
-selenium
-pandas
-webdriver-manager
-plotly
-streamlit-autorefresh
-
+streamlit==1.19.0
+playwright==1.30.0
+pandas==1.5.3
