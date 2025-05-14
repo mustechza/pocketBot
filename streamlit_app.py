@@ -1,50 +1,71 @@
 import streamlit as st
+import pandas as pd
+import time
+from datetime import datetime
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from webdriver_manager.chrome import ChromeDriverManager
-import pandas as pd
-import time
+import plotly.express as px
+from streamlit_autorefresh import st_autorefresh
 
-# --- Setup Headless Chrome ---
+# --- AUTO REFRESH ---
+st_autorefresh(interval=10 * 1000, key="datarefresh")  # every 10 seconds
+
+# --- PAGE CONFIG ---
+st.set_page_config(page_title="Pocket Option Monitor", layout="wide")
+st.title("📊 Pocket Option Market Monitor (Real-Time)")
+
+# --- GET SELENIUM DRIVER ---
 def get_driver():
     options = Options()
-    options.add_argument("--headless")  # Run in headless mode
-    options.add_argument("--disable-gpu")
+    options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     driver = webdriver.Chrome(ChromeDriverManager().install(), options=options)
     return driver
 
-# --- Scrape Market Data from Pocket Option ---
-def scrape_market_data(driver):
+# --- SCRAPE MARKET DATA ---
+def scrape_market_data():
+    driver = get_driver()
     driver.get("https://pocketoption.com/en/")
-    time.sleep(5)  # Wait for data to load
 
-    market_data = []
+    time.sleep(5)  # wait for data to load
+
     try:
-        rows = driver.find_elements(By.CSS_SELECTOR, ".asset-list__item")
+        table = driver.find_element(By.CLASS_NAME, "asset-table__body")
+        rows = table.find_elements(By.CLASS_NAME, "asset-table__row")
+
+        data = []
         for row in rows:
-            name = row.find_element(By.CSS_SELECTOR, ".asset__name").text
-            payout = row.find_element(By.CSS_SELECTOR, ".asset__payout").text
-            market_data.append({"Asset": name, "Payout": payout})
+            try:
+                asset = row.find_element(By.CLASS_NAME, "asset-table__title").text.strip()
+                payout = row.find_element(By.CLASS_NAME, "asset-table__profit").text.strip().replace("%", "")
+                data.append({
+                    "Time": datetime.now().strftime("%H:%M:%S"),
+                    "Asset": asset,
+                    "Payout (%)": float(payout)
+                })
+            except Exception:
+                continue
+
+        df = pd.DataFrame(data)
+        driver.quit()
+        return df
     except Exception as e:
+        driver.quit()
         st.error(f"Error scraping data: {e}")
         return pd.DataFrame()
 
-    return pd.DataFrame(market_data)
+# --- FETCH + DISPLAY DATA ---
+df = scrape_market_data()
 
-# --- Streamlit UI ---
-st.set_page_config(page_title="Pocket Option Market Monitor", layout="wide")
-st.title("📊 Pocket Option Market Monitor")
+if not df.empty:
+    st.dataframe(df, use_container_width=True)
 
-driver = get_driver()
-
-if st.button("Refresh Market Data"):
-    df = scrape_market_data(driver)
-    if not df.empty:
-        st.dataframe(df)
-    else:
-        st.warning("No data found.")
-
-st.caption("Data is scraped live from Pocket Option.")
+    # --- CHART ---
+    fig = px.bar(df, x="Asset", y="Payout (%)", color="Payout (%)",
+                 title="Current Payouts by Asset", labels={"Payout (%)": "Payout %"})
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.warning("No data available. Please try again later.")
