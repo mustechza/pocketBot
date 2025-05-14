@@ -1,6 +1,7 @@
-streamlit>=1.30.0
-selenium>=4.10.0
-webdriver-manager>=3.8.6
-pandas>=2.0.0
-plotly>=5.20.0
-streamlit-autorefresh>=0.0.3
+streamlit
+selenium
+pandas
+webdriver-manager
+plotly
+streamlit-autorefresh
+
