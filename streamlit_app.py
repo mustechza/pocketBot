@@ -10,7 +10,7 @@ from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from webdriver_manager.chrome import ChromeDriverManager
 import plotly.express as px
-
+from selenium.webdriver.chrome.service import Service
 # --- AUTO REFRESH ---
 st_autorefresh(interval=10 * 1000, key="datarefresh")  # every 10 seconds
 
@@ -18,12 +18,17 @@ st_autorefresh(interval=10 * 1000, key="datarefresh")  # every 10 seconds
 st.title("📊 Pocket Option Market Monitor (Real-Time)")
 
 # --- GET SELENIUM DRIVER ---
+
+
 def get_driver():
     options = Options()
     options.add_argument("--headless")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
-    driver = webdriver.Chrome(ChromeDriverManager().install(), options=options)
+
+    # Create a Service instance using the path
+    service = Service(ChromeDriverManager().install())
+    driver = webdriver.Chrome(service=service, options=options)
     return driver
 
 # --- SCRAPE MARKET DATA ---
