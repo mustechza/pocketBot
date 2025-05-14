@@ -1,77 +1,61 @@
 import streamlit as st
-st.set_page_config(page_title="Pocket Option Monitor", layout="wide")  # MUST be first Streamlit call
-
-from streamlit_autorefresh import st_autorefresh
 import pandas as pd
-import time
-from datetime import datetime
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from webdriver_manager.chrome import ChromeDriverManager
-import plotly.express as px
-from selenium.webdriver.chrome.service import Service
-# --- AUTO REFRESH ---
-st_autorefresh(interval=10 * 1000, key="datarefresh")  # every 10 seconds
+import asyncio
+from playwright.async_api import async_playwright
 
-# --- TITLE ---
-st.title("📊 Pocket Option Market Monitor (Real-Time)")
+# Set up Streamlit page config
+st.set_page_config(page_title="Pocket Option Monitor", layout="wide")
 
-# --- GET SELENIUM DRIVER ---
+# Function to scrape market data using Playwright
+async def scrape_market_data():
+    async with async_playwright() as p:
+        # Launch Chromium in headless mode
+        browser = await p.chromium.launch(headless=True)
+        page = await browser.new_page()
 
+        # Navigate to Pocket Option market page
+        await page.goto("https://pocketoption.com")
 
-def get_driver():
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
+        # Wait for page load and the specific market data element (adjust selector as needed)
+        await page.wait_for_selector(".market-table")  # Adjust this selector
 
-    # Create a Service instance using the path
-    service = Service(ChromeDriverManager().install())
-    driver = webdriver.Chrome(service=service, options=options)
-    return driver
+        # Scrape the required data
+        rows = await page.query_selector_all(".market-table tr")  # Adjust based on actual table row
 
-# --- SCRAPE MARKET DATA ---
-def scrape_market_data():
-    driver = get_driver()
-    driver.get("https://pocketoption.com/en/")
-
-    time.sleep(5)  # wait for data to load
-
-    try:
-        table = driver.find_element(By.CLASS_NAME, "asset-table__body")
-        rows = table.find_elements(By.CLASS_NAME, "asset-table__row")
-
-        data = []
+        # Parse market data into a list of dictionaries
+        market_data = []
         for row in rows:
-            try:
-                asset = row.find_element(By.CLASS_NAME, "asset-table__title").text.strip()
-                payout = row.find_element(By.CLASS_NAME, "asset-table__profit").text.strip().replace("%", "")
-                data.append({
-                    "Time": datetime.now().strftime("%H:%M:%S"),
-                    "Asset": asset,
-                    "Payout (%)": float(payout)
-                })
-            except Exception:
-                continue
+            cells = await row.query_selector_all("td")
+            market_data.append({
+                "Market": await cells[0].inner_text(),
+                "Price": await cells[1].inner_text(),
+                "Change": await cells[2].inner_text(),
+            })
 
-        df = pd.DataFrame(data)
-        driver.quit()
-        return df
-    except Exception as e:
-        driver.quit()
-        st.error(f"Error scraping data: {e}")
-        return pd.DataFrame()
+        # Close the browser
+        await browser.close()
 
-# --- FETCH + DISPLAY DATA ---
-df = scrape_market_data()
+        return pd.DataFrame(market_data)
 
-if not df.empty:
-    st.dataframe(df, use_container_width=True)
+# Function to refresh and display data
+def display_market_data():
+    # Scrape market data
+    data = asyncio.run(scrape_market_data())
+    
+    # Display in Streamlit
+    st.write("## Real-time Pocket Option Market Data")
+    st.dataframe(data)
 
-    # --- CHART ---
-    fig = px.bar(df, x="Asset", y="Payout (%)", color="Payout (%)",
-                 title="Current Payouts by Asset", labels={"Payout (%)": "Payout %"})
-    st.plotly_chart(fig, use_container_width=True)
-else:
-    st.warning("No data available. Please try again later.")
+    # Add chart if applicable
+    if not data.empty:
+        st.line_chart(data["Price"].astype(float))
+
+# Streamlit layout
+st.title("Pocket Option Real-Time Market Monitor")
+
+# Auto refresh the data every 60 seconds
+st.cache_data(ttl=60, show_spinner=True)(display_market_data)
+
+# Display market data on the Streamlit page
+display_market_data()
+
