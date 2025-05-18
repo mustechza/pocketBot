@@ -1,4 +1,3 @@
-
 import streamlit as st
 import asyncio
 import websockets
@@ -13,16 +12,19 @@ async def connect_to_websocket(app_id: str):
             send_message = json.dumps({"ping": 1})
             await websocket.send(send_message)
             st.info("Ping sent to server")
+            st.code(send_message, language="json")
 
-            response = await websocket.recv()
-            st.success(f"[message] Data received from server: {response}")
+            response = await asyncio.wait_for(websocket.recv(), timeout=5)
+            st.success("[message] Data received from server:")
+            st.json(json.loads(response))
 
+    except asyncio.TimeoutError:
+        st.error("Timeout: No response from server.")
     except websockets.ConnectionClosedError as e:
         if e.code == 1000:
             st.warning(f"[close] Clean connection closed: code={e.code}, reason={e.reason}")
         else:
             st.error("[close] Connection died")
-
     except Exception as e:
         st.error(f"[error] {str(e)}")
 
