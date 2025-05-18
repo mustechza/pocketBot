@@ -35,7 +35,7 @@ def run_async(func, *args):
 st.title("Deriv WebSocket Ping Tester")
 
 app_id = st.text_input("Enter your Deriv App ID", "")
-run = st.button("Connect and Send Ping")
+run = st.button("Connect & Send Ping")
 
 if run:
     if app_id:
