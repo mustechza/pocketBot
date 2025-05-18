@@ -1,2 +1,2 @@
-streamlit>=1.30.0
-websockets>=10.0
+streamlit
+websockets
