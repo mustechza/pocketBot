@@ -21,7 +21,8 @@ signal_log = deque(maxlen=3)
 
 # -------------------- Sidebar Controls --------------------
 asset = st.sidebar.selectbox("Select Asset", ["R_100", "R_50", "R_25", "R_10"])
-strategy = st.sidebar.selectbox("Select Strategy", ["EMA Crossover", "RSI", "MACD", "Bollinger Bands"])
+strategy = st.sidebar.selectbox("Select Strategy", [
+    "EMA Crossover", "RSI", "MACD", "Bollinger Bands", "Stochastic RSI", "Heikin-Ashi", "ATR Breakout"])
 show_confidence = st.sidebar.checkbox("Show Confidence %", True)
 
 # -------------------- Strategy Logic --------------------
@@ -92,9 +93,52 @@ def plot_strategy(df, strategy):
         fig.add_trace(go.Scatter(x=df.index, y=lower, name='Lower Band'))
         fig.add_trace(go.Scatter(x=df.index, y=ma, name='MA'))
 
+    elif strategy == "Stochastic RSI":
+        delta = df['close'].diff()
+        gain = delta.where(delta > 0, 0).rolling(14).mean()
+        loss = -delta.where(delta < 0, 0).rolling(14).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        rsi_min = rsi.rolling(14).min()
+        rsi_max = rsi.rolling(14).max()
+        stoch_rsi = 100 * (rsi - rsi_min) / (rsi_max - rsi_min)
+        df['StochRSI'] = stoch_rsi
+        df['Signal'] = np.where(stoch_rsi < 20, 'Buy', np.where(stoch_rsi > 80, 'Sell', None))
+        df['Confidence'] = abs(stoch_rsi - 50) * 2
+
+        fig.add_trace(go.Scatter(x=df.index, y=df['StochRSI'], name='Stoch RSI'))
+        fig.add_hline(y=80, line_dash='dash')
+        fig.add_hline(y=20, line_dash='dash')
+
+    elif strategy == "Heikin-Ashi":
+        ha_df = df.copy()
+        ha_df['HA_Close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
+        ha_df['HA_Open'] = (df['open'].shift(1) + df['close'].shift(1)) / 2
+        ha_df['HA_Open'].iloc[0] = df['open'].iloc[0]  # seed first value
+        for i in range(1, len(ha_df)):
+            ha_df['HA_Open'].iloc[i] = (ha_df['HA_Open'].iloc[i - 1] + ha_df['HA_Close'].iloc[i - 1]) / 2
+        ha_df['HA_High'] = ha_df[['HA_Open', 'HA_Close', 'high']].max(axis=1)
+        ha_df['HA_Low'] = ha_df[['HA_Open', 'HA_Close', 'low']].min(axis=1)
+        df = ha_df
+        df['Signal'] = np.where(df['HA_Close'] > df['HA_Open'], 'Buy', np.where(df['HA_Close'] < df['HA_Open'], 'Sell', None))
+        df['Confidence'] = abs(df['HA_Close'] - df['HA_Open']) / df['HA_Close'] * 100
+
+        fig.add_trace(go.Candlestick(x=df.index, open=df['HA_Open'], high=df['HA_High'], low=df['HA_Low'], close=df['HA_Close']))
+
+    elif strategy == "ATR Breakout":
+        df['TR'] = np.maximum((df['high'] - df['low']), np.maximum(abs(df['high'] - df['close'].shift()), abs(df['low'] - df['close'].shift())))
+        df['ATR'] = df['TR'].rolling(14).mean()
+        df['Upper'] = df['close'].shift(1) + df['ATR']
+        df['Lower'] = df['close'].shift(1) - df['ATR']
+        df['Signal'] = np.where(df['close'] > df['Upper'], 'Buy', np.where(df['close'] < df['Lower'], 'Sell', None))
+        df['Confidence'] = (abs(df['close'] - df['close'].shift(1)) / df['ATR']) * 50
+
+        fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close']))
+        fig.add_trace(go.Scatter(x=df.index, y=df['Upper'], name='Upper Bound'))
+        fig.add_trace(go.Scatter(x=df.index, y=df['Lower'], name='Lower Bound'))
+
     df['Confidence'] = df['Confidence'].fillna(0)
 
-    # Draw signals
     for ts, row in df[df['Signal'].notna()].iterrows():
         conf = min(max(row['Confidence'], 0), 100)
         signals.append((ts, row['Signal'], conf, row['close']))
@@ -136,7 +180,7 @@ async def deriv_ws_listener():
                     df.set_index('epoch', inplace=True)
                     df.rename(columns={'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close'}, inplace=True)
                     candle_df = df
-                    return  # only fetch once for Streamlit rerun
+                    return
             except:
                 continue
 
@@ -146,7 +190,6 @@ async def main():
     fig, signals = plot_strategy(candle_df.copy(), strategy)
     st.plotly_chart(fig, use_container_width=True)
 
-    # Show last 3 signals
     for ts, sig, conf, price in reversed(signals[-3:]):
         ts_fmt = ts.strftime('%Y-%m-%d %H:%M:%S')
         signal_log.appendleft(f"**{sig}** @ {price:.2f} — {ts_fmt} — 💡 Confidence: `{int(conf)}%`")
