@@ -1,11 +1,10 @@
-
 import streamlit as st
 import asyncio
 import websockets
 import pandas as pd
 import numpy as np
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import deque
 import plotly.graph_objects as go
 
@@ -31,7 +30,11 @@ def plot_strategy(df, strategy_name):
 
         for i in range(1, len(df)):
             if df["signal"].iloc[i] in ["Buy", "Sell"] and df["signal"].iloc[i] != df["signal"].iloc[i-1]:
-                signals.append((df.index[i], df["signal"].iloc[i], df["confidence"].iloc[i], df["close"].iloc[i]))
+                timestamp = df.index[i]
+                sig = df["signal"].iloc[i]
+                conf = df["confidence"].iloc[i]
+                price = df["close"].iloc[i]
+                signals.append((timestamp, sig, conf, price))
 
     fig = go.Figure()
     fig.add_trace(go.Candlestick(x=df.index,
@@ -47,12 +50,9 @@ def plot_strategy(df, strategy_name):
     fig.update_layout(title=f"{asset} - {strategy_name}", xaxis_rangeslider_visible=False)
     return fig, signals
 
-# ------------------ UI HELPERS ------------------
-def emoji(e): return e
-
 # ------------------ WEBSOCKET ------------------
 async def deriv_ws_listener(update_callback):
-    async with websockets.connect("wss://ws.derivws.com/websockets/v3?app_id=" + APP_ID) as ws:
+    async with websockets.connect(f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}") as ws:
         await ws.send(json.dumps({
             "ticks_history": asset,
             "adjust_start_time": 1,
@@ -70,9 +70,9 @@ async def deriv_ws_listener(update_callback):
                 if 'candles' in data:
                     candles = data['candles']
                     df = pd.DataFrame(candles)
-                    df['epoch'] = pd.to_datetime(df['epoch'], unit='s').dt.tz_localize("UTC").dt.tz_convert(TIMEZONE)
+                    df['epoch'] = pd.to_datetime(df['epoch'], unit='s')\
+                                 .dt.tz_localize("UTC").dt.tz_convert(TIMEZONE)
                     df.set_index('epoch', inplace=True)
-                    df.rename(columns={'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close'}, inplace=True)
                     await update_callback(df)
             except Exception as e:
                 print("WebSocket Error:", e)
@@ -80,11 +80,15 @@ async def deriv_ws_listener(update_callback):
 
 # ------------------ MAIN ------------------
 async def main():
-    global candle_df
-
     st.set_page_config(page_title="Deriv Signal App", layout="wide")
     st.title("📡 Deriv Live Signal Dashboard")
     st.caption("Streaming real-time signals from Deriv with EMA crossover strategy.")
+
+    # Sidebar controls
+    st.sidebar.header("Settings")
+    trade_duration = st.sidebar.number_input(
+        "Trade Duration (minutes)", min_value=1, max_value=60, value=2, step=1
+    )
 
     placeholder_chart = st.empty()
     placeholder_metrics = st.empty()
@@ -97,17 +101,23 @@ async def main():
         fig, signals = plot_strategy(candle_df.copy(), strategy)
         placeholder_chart.plotly_chart(fig, use_container_width=True)
 
+        # Process new signals
         for ts, sig, conf, price in reversed(signals[-3:]):
             ts_fmt = ts.strftime('%Y-%m-%d %H:%M:%S')
+            expiry = ts + timedelta(minutes=trade_duration)
+            expiry_fmt = expiry.strftime('%Y-%m-%d %H:%M:%S')
             signal_log.appendleft({
                 "signal": sig,
                 "price": price,
                 "timestamp": ts_fmt,
+                "expiry": expiry_fmt,
+                "duration": trade_duration,
                 "confidence": int(conf)
             })
 
+        # Display latest signals
         with placeholder_signals.container():
-            st.subheader(f"{emoji('📢')} Latest Signals")
+            st.subheader(f"📢 Latest Signals (Duration: {trade_duration}m)")
             cols = st.columns(3)
             for i, sig in enumerate(list(signal_log)[:3]):
                 with cols[i]:
@@ -116,22 +126,26 @@ async def main():
                             <h5 style="margin-bottom:5px;">📌 <b>{sig['signal']}</b></h5>
                             <p>💵 Price: <code>{sig['price']:.2f}</code></p>
                             <p>🕒 Time: <code>{sig['timestamp']}</code></p>
+                            <p>⏳ Expires: <code>{sig['expiry']}</code> ({sig['duration']}m)</p>
                             <p>🎯 Confidence: <code>{sig['confidence']}%</code></p>
                         </div>
                     """, unsafe_allow_html=True)
 
+        # Performance metrics
         with placeholder_metrics.container():
             st.markdown("---")
-            st.subheader(f"{emoji('📊')} Strategy Performance")
+            st.subheader("📊 Strategy Performance")
             total_signals = len(signal_log)
             buys = sum(1 for s in signal_log if s["signal"] == "Buy")
             sells = sum(1 for s in signal_log if s["signal"] == "Sell")
             avg_conf = np.mean([s["confidence"] for s in signal_log]) if signal_log else 0
+            avg_duration = np.mean([s["duration"] for s in signal_log]) if signal_log else 0
 
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             col1.metric("📈 Total Signals", total_signals)
             col2.metric("🟢 Buy / 🔴 Sell", f"{buys} / {sells}")
             col3.metric("🎯 Avg Confidence", f"{avg_conf:.1f}%")
+            col4.metric("⏱ Avg Duration (m)", f"{avg_duration:.1f}")
 
     await deriv_ws_listener(update_callback)
 
