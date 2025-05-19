@@ -1,6 +1,7 @@
-streamlit
-websockets
-pandas
-numpy
-plotly
-pytz
+streamlit>=1.30.0
+asyncio
+websockets>=11.0
+pandas>=2.1.0
+numpy>=1.25.0
+plotly>=5.20.0
+pytz>=2023.3
