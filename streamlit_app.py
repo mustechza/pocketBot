@@ -101,19 +101,38 @@ async def main():
         fig, signals = plot_strategy(candle_df.copy(), strategy)
         placeholder_chart.plotly_chart(fig, use_container_width=True)
 
+        now = datetime.utcnow().replace(tzinfo=pd.Timestamp.now().tz)
+
+        # Evaluate expired signals
+        for s in signal_log:
+            if 'outcome' not in s:
+                expiry_dt = pd.to_datetime(s['expiry']).tz_convert(TIMEZONE)
+                if now >= expiry_dt:
+                    post_expiry_price = df[df.index >= expiry_dt].head(1)["close"]
+                    if not post_expiry_price.empty:
+                        final_price = post_expiry_price.values[0]
+                        if s['signal'] == 'Buy':
+                            s['outcome'] = "Win" if final_price > s['price'] else "Loss"
+                        elif s['signal'] == 'Sell':
+                            s['outcome'] = "Win" if final_price < s['price'] else "Loss"
+                    else:
+                        s['outcome'] = "Pending"
+
         # Process new signals
         for ts, sig, conf, price in reversed(signals[-3:]):
             ts_fmt = ts.strftime('%Y-%m-%d %H:%M:%S')
             expiry = ts + timedelta(minutes=trade_duration)
             expiry_fmt = expiry.strftime('%Y-%m-%d %H:%M:%S')
-            signal_log.appendleft({
-                "signal": sig,
-                "price": price,
-                "timestamp": ts_fmt,
-                "expiry": expiry_fmt,
-                "duration": trade_duration,
-                "confidence": int(conf)
-            })
+            if not any(s['timestamp'] == ts_fmt and s['signal'] == sig for s in signal_log):
+                signal_log.appendleft({
+                    "signal": sig,
+                    "price": price,
+                    "timestamp": ts_fmt,
+                    "expiry": expiry_fmt,
+                    "duration": trade_duration,
+                    "confidence": int(conf),
+                    "outcome": "Pending"
+                })
 
         # Display latest signals
         with placeholder_signals.container():
@@ -128,6 +147,7 @@ async def main():
                             <p>🕒 Time: <code>{sig['timestamp']}</code></p>
                             <p>⏳ Expires: <code>{sig['expiry']}</code> ({sig['duration']}m)</p>
                             <p>🎯 Confidence: <code>{sig['confidence']}%</code></p>
+                            <p>✅ Outcome: <b>{sig['outcome']}</b></p>
                         </div>
                     """, unsafe_allow_html=True)
 
@@ -140,12 +160,16 @@ async def main():
             sells = sum(1 for s in signal_log if s["signal"] == "Sell")
             avg_conf = np.mean([s["confidence"] for s in signal_log]) if signal_log else 0
             avg_duration = np.mean([s["duration"] for s in signal_log]) if signal_log else 0
+            wins = sum(1 for s in signal_log if s.get("outcome") == "Win")
+            losses = sum(1 for s in signal_log if s.get("outcome") == "Loss")
+            winrate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
 
-            col1, col2, col3, col4 = st.columns(4)
+            col1, col2, col3, col4, col5 = st.columns(5)
             col1.metric("📈 Total Signals", total_signals)
             col2.metric("🟢 Buy / 🔴 Sell", f"{buys} / {sells}")
             col3.metric("🎯 Avg Confidence", f"{avg_conf:.1f}%")
             col4.metric("⏱ Avg Duration (m)", f"{avg_duration:.1f}")
+            col5.metric("🏆 Win Rate", f"{winrate:.1f}%")
 
     await deriv_ws_listener(update_callback)
 
