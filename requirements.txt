@@ -1,9 +1,26 @@
-streamlit
-asyncio
-websockets
-pandas
-numpy
-plotly
-pytz
-streamlit-javascript
+# Core App Framework
+streamlit==1.35.0
+streamlit-javascript==0.1.5
 
+# Technical Analysis
+pandas==2.2.2
+pandas-ta==0.3.14b0
+ta==0.11.0
+numpy==1.26.4
+
+# Charting
+matplotlib==3.8.4
+mplfinance==0.12.10b0
+plotly==5.21.0
+
+# Data/Networking
+websocket-client==1.7.0
+requests==2.31.0
+
+# Telegram Alerts
+python-telegram-bot==20.7
+
+# Utility & Others
+scikit-learn==1.4.2
+seaborn==0.13.2
+asyncio
