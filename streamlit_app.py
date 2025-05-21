@@ -1,272 +1,106 @@
 import streamlit as st
-import asyncio
-import websockets
-import json
 import pandas as pd
 import numpy as np
-import plotly.graph_objects as go
-from collections import deque
+import plotly.graph_objs as go
 import pytz
-import os
+from datetime import datetime, timedelta
+from utils import get_deriv_data, generate_signals, evaluate_signals, save_signal_to_csv
 
-# -------------------- Config --------------------
-st.set_page_config(layout="wide")
-st.title("📈 Deriv Strategy Signal Dashboard with Performance")
+# App title and layout
+st.set_page_config(page_title="Deriv Signal Bot", layout="wide")
+st.title("📈 Deriv Live Signal Dashboard")
 
-APP_ID = "76035"
-TIMEZONE = pytz.timezone('Africa/Johannesburg')  # GMT+2
+# Sidebar controls
+symbol = st.sidebar.selectbox("Select Asset", ["R_50", "R_100", "R_75", "R_25"])
+interval = st.sidebar.selectbox("Select Interval", ["1m", "5m", "15m"])
+strategy = st.sidebar.selectbox("Strategy", ["EMA_Cross", "RSI_OBOS", "MACD_Cross"])
+trade_duration = st.sidebar.number_input("Trade Duration (minutes)", min_value=1, max_value=60, value=2)
+period = st.sidebar.number_input("Backtest Period (candles)", min_value=50, max_value=500, value=200)
 
-# -------------------- Session State Initialization --------------------
-if "live_trades" not in st.session_state:
-    st.session_state["live_trades"] = []
+# Optional strategy parameters
+strategy_params = {}
+if strategy == "EMA_Cross":
+    strategy_params["fast"] = st.sidebar.number_input("Fast EMA", 5, 50, 9)
+    strategy_params["slow"] = st.sidebar.number_input("Slow EMA", 10, 200, 21)
+elif strategy == "RSI_OBOS":
+    strategy_params["rsi_period"] = st.sidebar.number_input("RSI Period", 5, 50, 14)
+    strategy_params["overbought"] = st.sidebar.slider("Overbought Level", 60, 100, 70)
+    strategy_params["oversold"] = st.sidebar.slider("Oversold Level", 0, 40, 30)
+elif strategy == "MACD_Cross":
+    strategy_params["fast"] = st.sidebar.number_input("MACD Fast", 5, 20, 12)
+    strategy_params["slow"] = st.sidebar.number_input("MACD Slow", 10, 50, 26)
+    strategy_params["signal"] = st.sidebar.number_input("MACD Signal", 5, 20, 9)
 
-LOG_FILE = "live_trade_log.csv"
-if not os.path.exists(LOG_FILE):
-    pd.DataFrame(columns=[
-        "timestamp", "symbol", "signal", "entry_time", "exit_time",
-        "entry_price", "exit_price", "return_pct", "result"
-    ]).to_csv(LOG_FILE, index=False)
+# Checkboxes
+enable_backtest = st.sidebar.checkbox("Enable Backtest", value=True)
+save_signals = st.sidebar.checkbox("Log Signals to CSV", value=True)
 
-# Placeholders
-chart_placeholder = st.empty()
-signals_placeholder = st.empty()
-signal_log = deque(maxlen=3)
+# Get live data
+df = get_deriv_data(symbol, interval)
+df.dropna(inplace=True)
 
-# -------------------- Sidebar Controls ----------------
-mode = st.sidebar.radio("Mode", ["Live", "Backtest"], index=0)
-asset = st.sidebar.selectbox("Select Asset", ["R_100", "R_50", "R_25", "R_10"])
-strategy = st.sidebar.selectbox("Select Strategy", [
-    "EMA Crossover", "RSI", "MACD", "Bollinger Bands", "Stochastic RSI", "Heikin-Ashi", "ATR Breakout"
-])
-show_confidence = st.sidebar.checkbox("Show Confidence %", True)
-period = st.sidebar.number_input("Signal Duration (minutes)", min_value=1, max_value=60, value=2)
-granularity = st.sidebar.selectbox("Granularity (seconds)", [60, 120, 300, 600], index=0)
+# Generate signals
+signals = generate_signals(df.copy(), strategy, **strategy_params)
 
-# Strategy-specific parameters
-ema_fast = st.sidebar.number_input("EMA Fast Span", min_value=2, max_value=100, value=5)
-ema_slow = st.sidebar.number_input("EMA Slow Span", min_value=ema_fast+1, max_value=200, value=10)
-rsi_period = st.sidebar.number_input("RSI Period", min_value=2, max_value=50, value=14)
-macd_fast = st.sidebar.number_input("MACD Fast Span", min_value=2, max_value=50, value=12)
-macd_slow = st.sidebar.number_input("MACD Slow Span", min_value=macd_fast+1, max_value=100, value=26)
-macd_signal = st.sidebar.number_input("MACD Signal Span", min_value=1, max_value=30, value=9)
-bb_window = st.sidebar.number_input("BB Window", min_value=2, max_value=100, value=20)
-bb_std = st.sidebar.slider("BB Std Multiplier", min_value=1.0, max_value=3.0, value=2.0, step=0.1)
-stoch_period = st.sidebar.number_input("Stoch RSI Period", min_value=2, max_value=50, value=14)
-atr_period = st.sidebar.number_input("ATR Period", min_value=2, max_value=50, value=14)
+# Show recent signals
+st.subheader("📢 Latest Signals")
+if not signals.empty:
+    recent_signals = signals.tail(3)
+    cols = st.columns(3)
+    for i, row in recent_signals.iterrows():
+        card = f"""
+        ### {row['signal']} Signal
+        - **Asset:** {symbol}
+        - **Time:** {row['timestamp'].strftime('%Y-%m-%d %H:%M:%S')}
+        - **Price:** {row['price']:.2f}
+        - **Expires in:** {trade_duration} min
+        """
+        cols[i % 3].markdown(card)
 
-# Reset log button
-if st.sidebar.button("Reset Performance Log"):
-    os.remove(LOG_FILE)
-    pd.DataFrame(columns=[
-        "timestamp", "symbol", "signal", "entry_time", "exit_time",
-        "entry_price", "exit_price", "return_pct", "result"
-    ]).to_csv(LOG_FILE, index=False)
-    st.sidebar.success("Performance log reset.")
+        if save_signals:
+            save_signal_to_csv(row, symbol, strategy, trade_duration)
+else:
+    st.info("No signals found.")
 
-# Backtest date inputs
-if mode == "Backtest":
-    start_date = st.sidebar.date_input("Start Date")
-    end_date = st.sidebar.date_input("End Date")
-    if st.sidebar.button("Run Backtest"):
-        async def fetch_history():
-            uri = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
-            async with websockets.connect(uri) as ws:
-                await ws.send(json.dumps({
-                    "ticks_history": asset,
-                    "adjust_start_time": 1,
-                    "start": int(pd.Timestamp(start_date).timestamp()),
-                    "end": int(pd.Timestamp(end_date).timestamp()),
-                    "style": "candles",
-                    "granularity": granularity,
-                    "subscribe": 0
-                }))
-                msg = await ws.recv()
-                data = json.loads(msg)
-                return data.get('candles', [])
+# Plot chart with signals
+st.subheader("📊 Price Chart")
+fig = go.Figure()
+fig.add_trace(go.Candlestick(x=df.index,
+                             open=df['open'], high=df['high'],
+                             low=df['low'], close=df['close'], name='Candles'))
 
-        hist = asyncio.run(fetch_history())
-        df_hist = pd.DataFrame(hist)
-        df_hist['epoch'] = pd.to_datetime(df_hist['epoch'], unit='s')
-        df_hist = df_hist.set_index('epoch').tz_localize('UTC').tz_convert(TIMEZONE)
-        df_hist.rename(columns={'open':'open','high':'high','low':'low','close':'close'}, inplace=True)
+buy_signals = signals[signals['signal'] == 'Buy']
+sell_signals = signals[signals['signal'] == 'Sell']
 
-        fig_back, signals_back = plot_strategy(df_hist, strategy)
-        chart_placeholder.plotly_chart(fig_back, use_container_width=True)
+fig.add_trace(go.Scatter(x=buy_signals['timestamp'], y=buy_signals['price'],
+                         mode='markers', marker=dict(color='green', size=10),
+                         name='Buy Signal'))
+fig.add_trace(go.Scatter(x=sell_signals['timestamp'], y=sell_signals['price'],
+                         mode='markers', marker=dict(color='red', size=10),
+                         name='Sell Signal'))
 
-        # Show backtest signals
-        st.subheader("🔁 Backtest Signals")
-        for ts, sig, conf, price in signals_back:
-            expiry = ts + pd.Timedelta(minutes=period)
-            st.markdown(f"**{sig}** @ {price:.2f} — {ts.strftime('%Y-%m-%d %H:%M')} ➡️ {expiry.strftime('%Y-%m-%d %H:%M')} — 💡 {int(conf)}%")
+fig.update_layout(height=500, margin=dict(t=20, b=20))
+st.plotly_chart(fig, use_container_width=True)
 
-        # Backtest performance metrics
-def evaluate_signals(df, signals, duration_minutes):
-    results = []
-    for ts, signal, conf, entry_price in signals:
-        exit_time = ts + pd.Timedelta(minutes=duration_minutes)
-        if exit_time not in df.index:
-            future = df[df.index > ts]
-            if future.empty: continue
-            exit_row = future.iloc[min(len(future)-1, duration_minutes)]
-        else:
-            exit_row = df.loc[exit_time]
-        exit_price = exit_row['close']
-        ret = ((exit_price - entry_price) / entry_price) * 100
-        if signal == 'Sell': ret = -ret
-        results.append(ret)
-    arr = np.array(results)
-    if arr.size == 0:
-        return {"Total Trades":0,"Win Rate":0,"Avg Return %":0,"Max Drawdown %":0}
-    win = (arr>0).sum()/arr.size*100
-    avg = arr.mean()
-    cum = np.cumsum(arr)
-    peak = np.maximum.accumulate(cum)
-    dd = (peak-cum).max()
-    return {"Total Trades":len(arr),"Win Rate":round(win,2),"Avg Return %":round(avg,2),"Max Drawdown %":round(dd,2)}
+# Backtesting and stats
+if enable_backtest:
+    df_hist = get_deriv_data(symbol, interval, 200)
+    signals_back = generate_signals(df_hist, strategy, **strategy_params)
+    stats_back = evaluate_signals(df_hist, signals_back, period)
 
-        stats_back = evaluate_signals(df_hist, signals_back, period)
-        st.subheader("📊 Backtest Performance")
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Trades", stats_back["Total Trades"])
-        c2.metric("Win Rate", f"{stats_back['Win Rate']}%")
-        c3.metric("Avg Return", f"{stats_back['Avg Return %']}%")
-        c4.metric("Max Drawdown", f"{stats_back['Max Drawdown %']}%")
-        st.sidebar.success(f"Backtest done: {stats_back['Total Trades']} trades.")
-        st.stop()
+    st.subheader("📉 Backtest Performance")
+    for key, val in stats_back.items():
+        st.metric(label=key.replace('_', ' ').title(), value=round(val, 2) if isinstance(val, float) else val)
 
-# Sidebar Metrics
-st.sidebar.markdown("### ⚡️ Signal Metrics (Live)")
-
-def plot_strategy(df, strategy):
-    fig = go.Figure()
-    signals = []
-    if df.empty: return fig, signals
-    # ... existing strategy logic here ...
-    return fig, signals
-
-# Live performance update & logging
-def update_live_performance(df, symbol, duration):
-    now = df.index[-1]
-    completed = []
-    open_trades = []
-    for t in st.session_state['live_trades']:
-        if now >= t['exit_time']:
-            exit_idx = df.index.get_indexer([t['exit_time']], method='nearest')[0]
-            exit_price = df.iloc[exit_idx]['close']
-            ret = ((exit_price - t['entry_price'])/t['entry_price'])*100
-            if t['signal']=='Sell': ret = -ret
-            result = 'win' if ret>0 else 'loss'
-            t.update({'exit_price':exit_price,'return_pct':round(ret,2),'result':result})
-            # log CSV
-            pd.DataFrame([{
-                'timestamp': now, 'symbol': symbol,
-                **t
-            }]).to_csv(LOG_FILE, mode='a', index=False, header=False)
-            completed.append(t)
-        else:
-            open_trades.append(t)
-    st.session_state['live_trades'] = open_trades
-    return completed
-
-# Equity curve chart
-
-def plot_equity_curve():
-    df = pd.read_csv(LOG_FILE)
-    if df.empty: return None
-    df['cum_return'] = df['return_pct'].cumsum()
-    fig = go.Figure(go.Scatter(x=pd.to_datetime(df['timestamp']), y=df['cum_return'], name='Equity'))
-    fig.update_layout(title='Equity Curve', xaxis_title='Time', yaxis_title='Cumulative Return %', height=400)
-    return fig
-
-# Live streaming
-async def stream_and_display():
-    uri = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
-    backoff = 1
-    while True:
-        try:
-            async with websockets.connect(uri) as ws:
-                await ws.send(json.dumps({
-                    "ticks_history": asset,
-                    "adjust_start_time": 1,
-                    "count": 100,
-                    "end": "latest",
-                    "start": 1,
-                    "style": "candles",
-                    "granularity": granularity,
-                    "subscribe": 1
-                }))
-                backoff = 1
-                while True:
-                    msg = await ws.recv()
-                    data = json.loads(msg)
-                    if 'candles' not in data: continue
-                    df = pd.DataFrame(data['candles'])
-                    df['epoch'] = pd.to_datetime(df['epoch'], unit='s')
-                    df = df.set_index('epoch').tz_localize('UTC').tz_convert(TIMEZONE)
-                    df.rename(columns={'open':'open','high':'high','low':'low','close':'close'}, inplace=True)
-
-                    fig, signals = plot_strategy(df, strategy)
-                    chart_placeholder.plotly_chart(fig, use_container_width=True)
-
-                    # Log new live signals
-                    for ts, sig, conf, price in reversed(signals[-period:]):
-                        entry_time = ts
-                        exit_time = ts + pd.Timedelta(minutes=period)
-                        st.session_state['live_trades'].append({
-                            'signal': sig, 'entry_time': entry_time,
-                            'exit_time': exit_time, 'entry_price': price
-                        })
-                        msg_md = f"**{sig}** @ {price:.2f}<br>{entry_time.strftime('%Y-%m-%d %H:%M:%S')} ➡️ {exit_time.strftime('%Y-%m-%d %H:%M:%S')}"
-                        if msg_md not in signal_log:
-                            signal_log.appendleft(msg_md)
-
-                    # Display latest signals
-                    with signals_placeholder.container():
-                        st.subheader("📢 Latest Signals")
-                        cols = st.columns(len(signal_log))
-                        for i, m in enumerate(signal_log):
-                            with cols[i]:
-                                st.markdown(m, unsafe_allow_html=True)
-
-                    # Sidebar counts
-                    total = len(signal_log)
-                    buys = sum('Buy' in m for m in signal_log)
-                    st.sidebar.metric("Signals", total)
-                    st.sidebar.metric("Buy", buys)
-                    st.sidebar.metric("Sell", total-buys)
-
-                    # Check and log completed trades
-                    completed = update_live_performance(df, asset, period)
-                    for tr in completed:
-                        st.success(f"✔️ {tr['signal']} closed: {tr['return_pct']}% ({tr['result']})")
-
-                    # Show live performance
-                    st.subheader("📈 Live Performance Summary")
-                    df_log = pd.read_csv(LOG_FILE)
-                    if not df_log.empty:
-                        win_rate = df_log['result'].eq('win').mean()*100
-                        avg_ret = df_log['return_pct'].mean()
-                        cum = df_log['return_pct'].cumsum()
-                        max_dd = (cum.cummax()-cum).max()
-                        c1,c2,c3,c4 = st.columns(4)
-                        c1.metric("Total Trades", len(df_log))
-                        c2.metric("Win Rate", f"{win_rate:.2f}%")
-                        c3.metric("Avg Return", f"{avg_ret:.2f}%")
-                        c4.metric("Max Drawdown", f"{max_dd:.2f}%")
-
-                    # Equity curve
-                    eq_fig = plot_equity_curve()
-                    if eq_fig:
-                        st.plotly_chart(eq_fig, use_container_width=True)
-
-                    await asyncio.sleep(1)
-        except Exception:
-            await asyncio.sleep(backoff)
-            backoff = min(backoff*2,60)
-
-# -------------------- Run --------------------
-if __name__ == '__main__':
-    if mode == 'Live':
-        asyncio.run(stream_and_display())
-    else:
-        pass  # backtest handled above
+# Live performance stats
+st.subheader("📈 Live Performance (Session)")
+log_file = f"logs/{symbol}_{strategy}_live.csv"
+try:
+    df_log = pd.read_csv(log_file)
+    df_log['timestamp'] = pd.to_datetime(df_log['timestamp'])
+    df_log = df_log[df_log['timestamp'] >= datetime.now() - timedelta(hours=6)]
+    stats_live = evaluate_signals(df, df_log, trade_duration)
+    for key, val in stats_live.items():
+        st.metric(label=key.replace('_', ' ').title(), value=round(val, 2) if isinstance(val, float) else val)
+except FileNotFoundError:
+    st.warning("No live performance data yet. Signals will be logged during session.")
