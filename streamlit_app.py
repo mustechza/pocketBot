@@ -22,7 +22,7 @@ signal_log = deque(maxlen=3)
 
 # -------------------- Sidebar Controls ----------------
 mode = st.sidebar.radio("Mode", ["Live", "Backtest"], index=0)
-asset = st.sidebar.selectbox("Select Asset", ["R_100", "R_50", "R_25", "R_10"])
+asset = st.sidebar.selectbox("Select Asset", ["frxEURUSD", "frxGBPUSD", "frxUSDJPY", "R_100", "R_50", "R_25", "R_10"])
 strategy = st.sidebar.selectbox("Select Strategy", [
     "EMA Crossover", "RSI", "MACD", "Bollinger Bands", "Stochastic RSI", "Heikin-Ashi", "ATR Breakout"
 ])
