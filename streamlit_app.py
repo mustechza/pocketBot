@@ -20,6 +20,9 @@ chart_placeholder = st.empty()
 signals_placeholder = st.empty()
 signal_log = deque(maxlen=3)
 
+# Sidebar Metrics Placeholders (auto-refresh)
+st.sidebar.markdown("### ⚡️ Signal Metrics")
+
 # -------------------- Sidebar Controls ----------------
 asset = st.sidebar.selectbox("Select Asset", ["R_100", "R_50", "R_25", "R_10"])
 strategy = st.sidebar.selectbox("Select Strategy", [
@@ -27,6 +30,7 @@ strategy = st.sidebar.selectbox("Select Strategy", [
 ])
 show_confidence = st.sidebar.checkbox("Show Confidence %", True)
 period = st.sidebar.number_input("Signal Duration (minutes)", min_value=1, max_value=60, value=2)
+granularity = st.sidebar.selectbox("Granularity (seconds)", [60, 120, 300, 600], index=0)
 
 # -------------------- Strategy Logic --------------------
 def plot_strategy(df, strategy):
@@ -110,7 +114,7 @@ def plot_strategy(df, strategy):
         ha = df.copy()
         ha['HA_Close'] = (df[['open','high','low','close']].sum(axis=1)) / 4
         ha['HA_Open'] = (df['open'].shift(1) + df['close'].shift(1)) / 2
-        ha['HA_Open'].iloc[0] = df['open'].iloc[0]
+        ha.loc[ha.index[0], 'HA_Open'] = df['open'].iloc[0]
         ha['HA_High'] = ha[['HA_Open','HA_Close','high']].max(axis=1)
         ha['HA_Low'] = ha[['HA_Open','HA_Close','low']].min(axis=1)
         df = ha
@@ -143,53 +147,70 @@ def plot_strategy(df, strategy):
     fig.update_layout(title=f"{strategy} on {asset}", height=600, xaxis_rangeslider_visible=False)
     return fig, signals
 
-# -------------------- Async Stream Loop --------------------
+# -------------------- Async Stream Loop with Reconnect --------------------
 async def stream_and_display():
     uri = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
-    async with websockets.connect(uri) as ws:
-        await ws.send(json.dumps({
-            "ticks_history": asset,
-            "adjust_start_time": 1,
-            "count": 100,
-            "end": "latest",
-            "start": 1,
-            "style": "candles",
-            "granularity": 60,
-            "subscribe": 1
-        }))
+    backoff = 1
+    while True:
+        try:
+            async with websockets.connect(uri) as ws:
+                # subscribe
+                await ws.send(json.dumps({
+                    "ticks_history": asset,
+                    "adjust_start_time": 1,
+                    "count": 100,
+                    "end": "latest",
+                    "start": 1,
+                    "style": "candles",
+                    "granularity": granularity,
+                    "subscribe": 1
+                }))
+                backoff = 1  # reset on success
 
-        while True:
-            try:
-                msg = await ws.recv()
-                data = json.loads(msg)
-                if 'candles' not in data:
-                    continue
-                df = pd.DataFrame(data['candles'])
-                df['epoch'] = pd.to_datetime(df['epoch'], unit='s')
-                df = df.set_index('epoch').tz_localize('UTC').tz_convert(TIMEZONE)
-                df.rename(columns={'open':'open','high':'high','low':'low','close':'close'}, inplace=True)
+                while True:
+                    msg = await ws.recv()
+                    data = json.loads(msg)
+                    if 'candles' not in data:
+                        continue
+                    df = pd.DataFrame(data['candles'])
+                    df['epoch'] = pd.to_datetime(df['epoch'], unit='s')
+                    df = df.set_index('epoch').tz_localize('UTC').tz_convert(TIMEZONE)
+                    df.rename(columns={'open':'open','high':'high','low':'low','close':'close'}, inplace=True)
 
-                fig, signals = plot_strategy(df, strategy)
-                chart_placeholder.plotly_chart(fig, use_container_width=True)
+                    fig, signals = plot_strategy(df, strategy)
+                    chart_placeholder.plotly_chart(fig, use_container_width=True)
 
-                # update signal log
-                for ts, sig, conf, price in reversed(signals[-period:]):
-                    ts_fmt = ts.strftime('%Y-%m-%d %H:%M:%S')
-                    msg_md = f"**{sig}** @ {price:.2f} — {ts_fmt} — 💡 Confidence: `{int(conf)}%`"
-                    if not signal_log or signal_log[0] != msg_md:
-                        signal_log.appendleft(msg_md)
-                # render
-                with signals_placeholder.container():
-                    st.subheader("📢 Latest Signals")
-                    cols = st.columns(3)
-                    for i, m in enumerate(signal_log):
-                        with cols[i]:
-                            st.markdown(m, unsafe_allow_html=True)
+                    # update signal log
+                    for ts, sig, conf, price in reversed(signals[-period:]):
+                        ts_fmt = ts.strftime('%Y-%m-%d %H:%M:%S')
+                        expiry_fmt = (ts + pd.Timedelta(minutes=period)).strftime('%Y-%m-%d %H:%M:%S')
+                        confidence_part = f" — 💡 Confidence: `{int(conf)}%`" if show_confidence else ""
+                        msg_md = f"**{sig}** @ {price:.2f}<br>{ts_fmt} ➡️ {expiry_fmt}{confidence_part}"
+                        if msg_md not in signal_log:
+                            signal_log.appendleft(msg_md)
 
-                await asyncio.sleep(1)
+                    # render signals
+                    with signals_placeholder.container():
+                        st.subheader("📢 Latest Signals")
+                        cols = st.columns(len(signal_log))
+                        for i, m in enumerate(signal_log):
+                            with cols[i]:
+                                st.markdown(m, unsafe_allow_html=True)
 
-            except Exception:
-                continue
+                    # update sidebar metrics
+                    total_signals = len(signal_log)
+                    buy_count = sum(1 for m in signal_log if 'Buy' in m)
+                    sell_count = total_signals - buy_count
+                    st.sidebar.metric("Signals", total_signals)
+                    st.sidebar.metric("Buy", buy_count)
+                    st.sidebar.metric("Sell", sell_count)
+
+                    await asyncio.sleep(1)
+
+        except Exception:
+            await asyncio.sleep(backoff)
+            backoff = min(backoff * 2, 60)
+            continue
 
 # -------------------- Run --------------------
 if __name__ == '__main__':
