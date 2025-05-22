@@ -7,6 +7,7 @@ import numpy as np
 import plotly.graph_objects as go
 from collections import deque
 import pytz
+from datetime import datetime
 
 # -------------------- Config --------------------
 st.set_page_config(layout="wide")
@@ -163,55 +164,105 @@ if mode == "Backtest":
                     "granularity": granularity,
                     "subscribe": 0
                 }))
-                msg = await ws.recv()
-                data = json.loads(msg)
-                return data.get('candles', [])
+                while True:
+                    msg = await ws.recv()
+                    data = json.loads(msg)
+                    if 'candles' in data:
+                        return data['candles']
 
         hist = asyncio.run(fetch_history())
-        df_hist = pd.DataFrame(hist)
-        df_hist['epoch'] = pd.to_datetime(df_hist['epoch'], unit='s')
-        df_hist = df_hist.set_index('epoch').tz_localize('UTC').tz_convert(TIMEZONE)
-        df_hist.rename(columns={'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close'}, inplace=True)
-        fig_back, signals_back = plot_strategy(df_hist, strategy)
-        chart_placeholder.plotly_chart(fig_back, use_container_width=True)
+        df = pd.DataFrame(hist)
+        df['epoch'] = pd.to_datetime(df['epoch'], unit='s').dt.tz_localize('UTC').dt.tz_convert(TIMEZONE)
+        df.set_index('epoch', inplace=True)
+        df = df.astype(float)
 
-        st.subheader("🔁 Backtest Signals")
-        for ts, sig, conf, price in signals_back:
-            expiry = ts + pd.Timedelta(minutes=period)
-            st.markdown(f"**{sig}** @ {price:.2f} — {ts.strftime('%Y-%m-%d %H:%M')} ➡️ {expiry.strftime('%Y-%m-%d %H:%M')} — 💡 {int(conf)}%")
-        st.sidebar.success(f"Backtest found {len(signals_back)} signals.")
-        st.stop()
+        fig, signals = plot_strategy(df, strategy)
+        chart_placeholder.plotly_chart(fig, use_container_width=True)
 
-# -------------------- Live Mode --------------------
-async def stream_live():
-    uri = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
-    async with websockets.connect(uri) as ws:
-        await ws.send(json.dumps({
-            "ticks_history": asset,
-            "adjust_start_time": 1,
-            "count": 100,
-            "end": "latest",
-            "start": 1,
-            "style": "candles",
-            "granularity": granularity,
-            "subscribe": 1
-        }))
-        while True:
-            msg = await ws.recv()
-            data = json.loads(msg)
-            if 'candles' not in data:
-                continue
-            df = pd.DataFrame(data['candles'])
-            df['epoch'] = pd.to_datetime(df['epoch'], unit='s')
-            df = df.set_index('epoch').tz_localize('UTC').tz_convert(TIMEZONE)
-            df.rename(columns={'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close'}, inplace=True)
-            fig, signals = plot_strategy(df, strategy)
-            chart_placeholder.plotly_chart(fig, use_container_width=True)
-            with signals_placeholder.container():
-                st.subheader("📡 Live Signals")
-                for ts, sig, conf, price in reversed(signals[-3:]):
-                    expiry = ts + pd.Timedelta(minutes=period)
-                    st.markdown(f"**{sig}** @ {price:.2f} — {ts.strftime('%H:%M:%S')} ➡️ {expiry.strftime('%H:%M:%S')} — 💡 {int(conf)}%")
+        signals_placeholder.markdown("### Signals")
+        for ts, sig, conf, price in signals[-5:]:
+            conf_text = f" - Confidence: {conf:.1f}%" if show_confidence else ""
+            signals_placeholder.write(f"{ts.strftime('%Y-%m-%d %H:%M:%S')}: **{sig}** at price {price:.5f}{conf_text}")
 
-if mode == "Live":
-    asyncio.run(stream_live())
+# -------------------- Live Mode Logic --------------------
+else:
+    # Background async event loop to run websocket connection in separate thread
+    import threading
+
+    loop = asyncio.new_event_loop()
+    ws_task = None
+    stop_stream = False
+
+    df_live = pd.DataFrame()
+
+    # A thread-safe deque to hold last candles for live plotting & signal detection
+    live_candles = deque(maxlen=200)
+
+    # Button to start/stop streaming
+    start_button = st.sidebar.button("Start Live Stream")
+    stop_button = st.sidebar.button("Stop Live Stream")
+
+    if start_button and not ws_task:
+        stop_stream = False
+
+        def start_loop(loop):
+            asyncio.set_event_loop(loop)
+            loop.run_forever()
+
+        threading.Thread(target=start_loop, args=(loop,), daemon=True).start()
+
+        async def live_stream():
+            nonlocal stop_stream
+
+            uri = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
+            try:
+                async with websockets.connect(uri) as ws:
+                    await ws.send(json.dumps({
+                        "ticks_history": asset,
+                        "adjust_start_time": 1,
+                        "count": 100,
+                        "end": "latest",
+                        "start": 1,
+                        "style": "candles",
+                        "granularity": granularity,
+                        "subscribe": 1
+                    }))
+                    while not stop_stream:
+                        msg = await ws.recv()
+                        data = json.loads(msg)
+                        if "candles" in data:
+                            for candle in data["candles"]:
+                                candle['epoch'] = pd.to_datetime(candle['epoch'], unit='s').tz_localize('UTC').tz_convert(TIMEZONE)
+                                candle['open'] = float(candle['open'])
+                                candle['high'] = float(candle['high'])
+                                candle['low'] = float(candle['low'])
+                                candle['close'] = float(candle['close'])
+                                candle['volume'] = float(candle['volume'])
+                                live_candles.append(candle)
+                        await asyncio.sleep(0.1)
+            except Exception as e:
+                st.error(f"Live stream error: {e}")
+
+        ws_task = loop.create_task(live_stream())
+
+    if stop_button and ws_task:
+        stop_stream = True
+        ws_task.cancel()
+        ws_task = None
+        signals_placeholder.markdown("### Stream stopped")
+
+    # Show live chart and signals updated every 3 seconds
+    if live_candles:
+        df_live = pd.DataFrame(live_candles).set_index('epoch')
+
+        fig, signals = plot_strategy(df_live, strategy)
+        chart_placeholder.plotly_chart(fig, use_container_width=True)
+
+        signals_placeholder.markdown("### Latest Signals")
+        for ts, sig, conf, price in signals[-3:]:
+            conf_text = f" - Confidence: {conf:.1f}%" if show_confidence else ""
+            signals_placeholder.write(f"{ts.strftime('%Y-%m-%d %H:%M:%S')}: **{sig}** at price {price:.5f}{conf_text}")
+
+    # Auto-refresh every 3 seconds while live
+    if ws_task:
+        st.experimental_rerun()
