@@ -24,8 +24,37 @@ signal_log = deque(maxlen=3)
 # -------------------- Sidebar Controls ----------------
 mode = st.sidebar.radio("Mode", ["Live", "Backtest"], index=0)
 asset = st.sidebar.selectbox("Select Asset", [
-    "frxEURUSD", "frxGBPUSD", "frxUSDJPY", "R_100", "R_50", "R_25", "R_10"
+    # Major Pairs
+    "frxEURUSD", "frxGBPUSD", "frxUSDJPY", "frxUSDCHF", "frxAUDUSD", "frxUSDCAD", "frxNZDUSD",
+
+    # Minor Pairs
+    "frxEURGBP", "frxEURJPY", "frxEURCHF", "frxEURAUD", "frxEURCAD", "frxEURNZD",
+    "frxGBPJPY", "frxGBPCHF", "frxGBPAUD", "frxGBPCAD", "frxGBPNZD",
+    "frxAUDJPY", "frxAUDCHF", "frxAUDCAD", "frxAUDNZD",
+    "frxNZDJPY", "frxNZDCHF", "frxNZDCAD",
+    "frxCADJPY", "frxCADCHF",
+    "frxCHFJPY",
+
+    # Exotic Pairs
+    "frxUSDZAR", "frxUSDTRY", "frxUSDMXN", "frxUSDSEK", "frxUSDNOK", "frxUSDDKK",
+    "frxUSDPLN", "frxUSDHKD", "frxUSDTHB", "frxUSDSGD", "frxUSDCNH",
+    "frxEURTRY", "frxEURZAR", "frxGBPZAR", "frxCHFZAR",
+
+    # Crypto Pairs (Deriv format)
+    "cryBTCUSD", "cryETHUSD", "cryLTCUSD", "cryXRPUSD",
+    "cryBCHUSD", "cryEOSUSD", "cryADAUSD", "cryDOTUSD",
+    "cryBNBUSD", "crySOLUSD",
+
+    # Synthetic Indices
+    "R_100", "R_75", "R_50", "R_25", "R_10",
+    "R_100_e", "R_75_e", "R_50_e", "R_25_e", "R_10_e",
+    "BOOM1000", "BOOM500", "BOOM300",
+    "CRASH1000", "CRASH500", "CRASH300",
+    "Volatility_10_Index", "Volatility_25_Index", "Volatility_50_Index",
+    "Volatility_75_Index", "Volatility_100_Index",
+    "Jump_10_Index", "Jump_25_Index", "Jump_50_Index", "Jump_75_Index", "Jump_100_Index"
 ])
+
 strategy = st.sidebar.selectbox("Select Strategy", [
     "EMA Crossover", "RSI", "MACD", "Bollinger Bands",
     "Stochastic RSI", "Heikin-Ashi", "ATR Breakout", "Green Line Strategy"
