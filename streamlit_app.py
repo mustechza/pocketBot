@@ -57,7 +57,7 @@ asset = st.sidebar.selectbox("Select Asset", [
 
 strategy = st.sidebar.selectbox("Select Strategy", [
     "EMA Crossover", "RSI", "MACD", "Bollinger Bands",
-    "Stochastic RSI", "Heikin-Ashi", "ATR Breakout", "Green Line Strategy"
+    "Stochastic RSI", "Heikin-Ashi", "ATR Breakout"
 ])
 show_confidence = st.sidebar.checkbox("Show Confidence %", True)
 period = st.sidebar.number_input("Signal Duration (minutes)", min_value=1, max_value=60, value=2)
@@ -217,7 +217,7 @@ def plot_strategy(df, strategy):
         fig.add_trace(go.Scatter(x=df.index, y=lower, name='Lower Bound'))
 
 
-        # Green Line Strategy
+        # Green Line Strategy not used for now
     elif strategy == "Green Line Strategy":
         # Compute EMA 7 & 20
         df['EMA_7'] = ta.trend.ema_indicator(df['close'], window=7)
