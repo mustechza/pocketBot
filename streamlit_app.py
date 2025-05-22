@@ -187,7 +187,8 @@ def plot_strategy(df, strategy):
         fig.add_trace(go.Scatter(x=df.index, y=upper, name='Upper Bound'))
         fig.add_trace(go.Scatter(x=df.index, y=lower, name='Lower Bound'))
 
-    # Green Line Strategy
+
+        # Green Line Strategy
     elif strategy == "Green Line Strategy":
         # Compute EMA 7 & 20
         df['EMA_7'] = ta.trend.ema_indicator(df['close'], window=7)
@@ -221,8 +222,12 @@ def plot_strategy(df, strategy):
             x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Price'
         ))
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA_7'], name='EMA 7'))
-        fig.add_trace(go<Scatter>(x=df.index, y=df['EMA_20'], name='EMA 20'))
+        fig.add_trace(go.Scatter(x=df.index, y=df['EMA_20'], name='EMA 20'))  # <-- here
 
+
+
+
+    
     # Collect signals and render layout
     df['Confidence'] = df.get('Confidence', 0).fillna(0)
     df_signals = [(idx, row['Signal'], row['Confidence'], row['close']) for idx,row in df.iterrows() if pd.notna(row.get('Signal'))]
