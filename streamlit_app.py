@@ -1,3 +1,4 @@
+
 import streamlit as st
 import asyncio
 import websockets
@@ -7,7 +8,6 @@ import numpy as np
 import plotly.graph_objects as go
 from collections import deque
 import pytz
-import ta  # added for Green Line Strategy
 
 # -------------------- Config --------------------
 st.set_page_config(layout="wide")
@@ -23,47 +23,15 @@ signal_log = deque(maxlen=3)
 
 # -------------------- Sidebar Controls ----------------
 mode = st.sidebar.radio("Mode", ["Live", "Backtest"], index=0)
-asset = st.sidebar.selectbox("Select Asset", [
-    # Major Pairs
-    "frxEURUSD", "frxGBPUSD", "frxUSDJPY", "frxUSDCHF", "frxAUDUSD", "frxUSDCAD", "frxNZDUSD",
-
-    # Minor Pairs
-    "frxEURGBP", "frxEURJPY", "frxEURCHF", "frxEURAUD", "frxEURCAD", "frxEURNZD",
-    "frxGBPJPY", "frxGBPCHF", "frxGBPAUD", "frxGBPCAD", "frxGBPNZD",
-    "frxAUDJPY", "frxAUDCHF", "frxAUDCAD", "frxAUDNZD",
-    "frxNZDJPY", "frxNZDCHF", "frxNZDCAD",
-    "frxCADJPY", "frxCADCHF",
-    "frxCHFJPY",
-
-    # Exotic Pairs
-    "frxUSDZAR", "frxUSDTRY", "frxUSDMXN", "frxUSDSEK", "frxUSDNOK", "frxUSDDKK",
-    "frxUSDPLN", "frxUSDHKD", "frxUSDTHB", "frxUSDSGD", "frxUSDCNH",
-    "frxEURTRY", "frxEURZAR", "frxGBPZAR", "frxCHFZAR",
-
-    # Crypto Pairs (Deriv format)
-    "cryBTCUSD", "cryETHUSD", "cryLTCUSD", "cryXRPUSD",
-    "cryBCHUSD", "cryEOSUSD", "cryADAUSD", "cryDOTUSD",
-    "cryBNBUSD", "crySOLUSD",
-
-    # Synthetic Indices
-    "R_100", "R_75", "R_50", "R_25", "R_10",
-    "R_100_e", "R_75_e", "R_50_e", "R_25_e", "R_10_e",
-    "BOOM1000", "BOOM500", "BOOM300",
-    "CRASH1000", "CRASH500", "CRASH300",
-    "Volatility_10_Index", "Volatility_25_Index", "Volatility_50_Index",
-    "Volatility_75_Index", "Volatility_100_Index",
-    "Jump_10_Index", "Jump_25_Index", "Jump_50_Index", "Jump_75_Index", "Jump_100_Index"
-])
-
+asset = st.sidebar.selectbox("Select Asset", ["frxEURUSD", "frxGBPUSD", "frxUSDJPY", "R_100", "R_50", "R_25", "R_10"])
 strategy = st.sidebar.selectbox("Select Strategy", [
-    "EMA Crossover", "RSI", "MACD", "Bollinger Bands",
-    "Stochastic RSI", "Heikin-Ashi", "ATR Breakout"
+    "EMA Crossover", "RSI", "MACD", "Bollinger Bands", "Stochastic RSI", "Heikin-Ashi", "ATR Breakout"
 ])
 show_confidence = st.sidebar.checkbox("Show Confidence %", True)
 period = st.sidebar.number_input("Signal Duration (minutes)", min_value=1, max_value=60, value=2)
 granularity = st.sidebar.selectbox("Granularity (seconds)", [60, 120, 300, 600], index=0)
 
-# Strategy-specific parameters (existing ones)
+# Strategy-specific parameters
 ema_fast = st.sidebar.number_input("EMA Fast Span", min_value=2, max_value=100, value=5)
 ema_slow = st.sidebar.number_input("EMA Slow Span", min_value=ema_fast+1, max_value=200, value=10)
 rsi_period = st.sidebar.number_input("RSI Period", min_value=2, max_value=50, value=14)
@@ -121,8 +89,6 @@ def plot_strategy(df, strategy):
     signals = []
     if df.empty:
         return fig, signals
-
-    # EMA Crossover
     if strategy == "EMA Crossover":
         df['EMA_Fast'] = df['close'].ewm(span=ema_fast).mean()
         df['EMA_Slow'] = df['close'].ewm(span=ema_slow).mean()
@@ -134,21 +100,17 @@ def plot_strategy(df, strategy):
         fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close']))
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA_Fast'], name='EMA Fast'))
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA_Slow'], name='EMA Slow'))
-
-    # RSI
     elif strategy == "RSI":
         delta = df['close'].diff()
         gain = delta.clip(lower=0).rolling(rsi_period).mean()
         loss = -delta.clip(upper=0).rolling(rsi_period).mean()
         rs = gain / loss
         df['RSI'] = 100 - (100 / (1 + rs))
-        df['Signal'] = np.where(df['RSI'] < 30, 'Buy', np.where(df['RSI'] > 70, 'Sell', None))
+        df['Signal'] = np.where(df['RSI'] < 100*(30/100), 'Buy', np.where(df['RSI'] > 100*(70/100), 'Sell', None))
         df['Confidence'] = abs(df['RSI'] - 50) * 2
         fig.add_trace(go.Scatter(x=df.index, y=df['RSI'], name='RSI'))
         fig.add_hline(y=70, line_dash='dash')
         fig.add_hline(y=30, line_dash='dash')
-
-    # MACD
     elif strategy == "MACD":
         exp1 = df['close'].ewm(span=macd_fast, adjust=False).mean()
         exp2 = df['close'].ewm(span=macd_slow, adjust=False).mean()
@@ -163,8 +125,6 @@ def plot_strategy(df, strategy):
         df['Confidence'] = df['Confidence'].clip(0, 100)
         fig.add_trace(go.Scatter(x=df.index, y=macd, name='MACD'))
         fig.add_trace(go.Scatter(x=df.index, y=signal_line, name='Signal Line'))
-
-    # Bollinger Bands
     elif strategy == "Bollinger Bands":
         ma = df['close'].rolling(bb_window).mean()
         std = df['close'].rolling(bb_window).std()
@@ -176,8 +136,6 @@ def plot_strategy(df, strategy):
         fig.add_trace(go.Scatter(x=df.index, y=upper, name='Upper Band'))
         fig.add_trace(go.Scatter(x=df.index, y=lower, name='Lower Band'))
         fig.add_trace(go.Scatter(x=df.index, y=ma, name='MA'))
-
-    # Stochastic RSI
     elif strategy == "Stochastic RSI":
         delta = df['close'].diff()
         gain = delta.where(delta>0,0).rolling(stoch_period).mean()
@@ -190,97 +148,28 @@ def plot_strategy(df, strategy):
         fig.add_trace(go.Scatter(x=df.index, y=stoch, name='Stoch RSI'))
         fig.add_hline(y=80, line_dash='dash')
         fig.add_hline(y=20, line_dash='dash')
-
-  elif strategy == "Heikin-Ashi":
-    ha = df.copy()
-
-    # Heikin-Ashi calculations
-    ha['HA_Close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
-    ha['HA_Open'] = 0.0
-    ha['HA_Open'].iloc[0] = df['open'].iloc[0]
-
-    for i in range(1, len(df)):
-        ha['HA_Open'].iloc[i] = (ha['HA_Open'].iloc[i-1] + ha['HA_Close'].iloc[i-1]) / 2
-
-    ha['HA_High'] = ha[['HA_Open', 'HA_Close', 'high']].max(axis=1)
-    ha['HA_Low'] = ha[['HA_Open', 'HA_Close', 'low']].min(axis=1)
-
-    # Signal generation
-    ha['Signal'] = np.where(
-        ha['HA_Close'] > ha['HA_Open'], 'Buy',
-        np.where(ha['HA_Close'] < ha['HA_Open'], 'Sell', None)
-    )
-
-    ha['Confidence'] = (abs(ha['HA_Close'] - ha['HA_Open']) / ha['HA_Close']) * 100
-
-    # Update main df
-    df = ha
-
-    # Plot Heikin-Ashi candles
-    fig.add_trace(go.Candlestick(
-        x=df.index,
-        open=df['HA_Open'],
-        high=df['HA_High'],
-        low=df['HA_Low'],
-        close=df['HA_Close'],
-        name='Heikin-Ashi'
-    ))
-
-    # ATR Breakout
+    elif strategy == "Heikin-Ashi":
+        ha = df.copy()
+        ha['HA_Close'] = (df[['open','high','low','close']].sum(axis=1))/4
+        ha['HA_Open'] = (df['open'].shift(1)+df['close'].shift(1))/2
+        ha.loc[ha.index[0],'HA_Open'] = df['open'].iloc[0]
+        ha['HA_High'] = ha[['HA_Open','HA_Close','high']].max(axis=1)
+        ha['HA_Low'] = ha[['HA_Open','HA_Close','low']].min(axis=1)
+        df = ha
+        df['Signal'] = np.where(df['HA_Close']>df['HA_Open'],'Buy',np.where(df['HA_Close']<df['HA_Open'],'Sell',None))
+        df['Confidence'] = abs(df['HA_Close']-df['HA_Open'])/df['HA_Close']*100
+        fig.add_trace(go.Candlestick(x=df.index, open=df['HA_Open'], high=df['HA_High'], low=df['HA_Low'], close=df['HA_Close']))
     elif strategy == "ATR Breakout":
-        df['ATR'] = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=atr_period)
-        df['Upper_Break'] = df['close'].rolling(atr_period).max() + df['ATR']
-        df['Lower_Break'] = df['close'].rolling(atr_period).min() - df['ATR']
-        df['Signal'] = np.where(df['close'] > df['Upper_Break'], 'Buy', np.where(df['close'] < df['Lower_Break'], 'Sell', None))
-        df['Confidence'] = abs(df['close'] - df['close'].rolling(atr_period).mean()) / df['ATR'] * 10
-        df['Confidence'] = df['Confidence'].clip(0, 100)
+        tr = np.maximum((df['high']-df['low']), np.maximum(abs(df['high']-df['close'].shift()), abs(df['low']-df['close'].shift())))
+        atr = tr.rolling(atr_period).mean()
+        upper = df['close'].shift(1)+atr
+        lower = df['close'].shift(1)-atr
+        df['Signal'] = np.where(df['close']>upper,'Buy',np.where(df['close']<lower,'Sell',None))
+        df['Confidence'] = (abs(df['close']-df['close'].shift(1))/atr)*50
         fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close']))
-        fig.add_trace(go.Scatter(x=df.index, y=df['Upper_Break'], name='Upper Break'))
-        fig.add_trace(go.Scatter(x=df.index, y=df['Lower_Break'], name='Lower Break'))
-
-
-        # Green Line Strategy not used for now
-    elif strategy == "Green Line Strategy":
-        # Compute EMA 7 & 20
-        df['EMA_7'] = ta.trend.ema_indicator(df['close'], window=7)
-        df['EMA_20'] = ta.trend.ema_indicator(df['close'], window=20)
-        # MACD histogram
-        macd = ta.trend.MACD(df['close'])
-        df['MACD_hist'] = macd.macd_diff()
-        # Signals
-        df['Signal'] = None
-        for i in range(1, len(df)):
-            buy = (
-                df['close'].iat[i] > df['EMA_7'].iat[i] and
-                df['EMA_7'].iat[i] > df['EMA_20'].iat[i] and
-                df['MACD_hist'].iat[i] > 0 and
-                df['close'].iat[i-1] < df['EMA_7'].iat[i-1]
-            )
-            sell = (
-                df['close'].iat[i] < df['EMA_7'].iat[i] and
-                df['EMA_7'].iat[i] < df['EMA_20'].iat[i] and
-                df['MACD_hist'].iat[i] < 0 and
-                df['close'].iat[i-1] > df['EMA_7'].iat[i-1]
-            )
-            if buy:
-                df.at[df.index[i], 'Signal'] = 'Buy'
-            elif sell:
-                df.at[df.index[i], 'Signal'] = 'Sell'
-        # Confidence scaled from MACD histogram
-        df['Confidence'] = df['MACD_hist'].abs().clip(0, 100)
-        # Plot
-        fig.add_trace(go.Candlestick(
-            x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close'], name='Price'
-        ))
-        fig.add_trace(go.Scatter(x=df.index, y=df['EMA_7'], name='EMA 7'))
-        fig.add_trace(go.Scatter(x=df.index, y=df['EMA_20'], name='EMA 20'))  # <-- here
-
-
-
-
-    
-    # Collect signals and render layout
-    df['Confidence'] = df.get('Confidence', 0).fillna(0)
+        fig.add_trace(go.Scatter(x=df.index, y=upper, name='Upper Bound'))
+        fig.add_trace(go.Scatter(x=df.index, y=lower, name='Lower Bound'))
+    df['Confidence'] = df.get('Confidence',0).fillna(0)
     df_signals = [(idx, row['Signal'], row['Confidence'], row['close']) for idx,row in df.iterrows() if pd.notna(row.get('Signal'))]
     for ts,sig,conf,price in df_signals:
         signals.append((ts, sig, min(max(conf,0),100), price))
@@ -345,5 +234,3 @@ async def stream_and_display():
 if __name__ == '__main__':
     if mode == 'Live':
         asyncio.run(stream_and_display())
-    else:
-        st.warning("Switch to Live mode for real-time streaming or use Backtest to simulate.")
