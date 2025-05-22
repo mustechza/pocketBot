@@ -5,8 +5,3 @@ pandas
 numpy
 plotly
 pytz
-ta
-
-
-
-
