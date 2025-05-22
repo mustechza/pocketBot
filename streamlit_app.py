@@ -191,30 +191,52 @@ def plot_strategy(df, strategy):
         fig.add_hline(y=80, line_dash='dash')
         fig.add_hline(y=20, line_dash='dash')
 
-    # Heikin-Ashi
-    elif strategy == "Heikin-Ashi":
-        ha = df.copy()
-        ha['HA_Close'] = (df[['open','high','low','close']].sum(axis=1))/4
-        ha['HA_Open'] = (df['open'].shift(1)+df['close'].shift(1))/2
-        ha.loc[ha.index[0],'HA_Open'] = df['open'].iloc[0]
-        ha['HA_High'] = ha[['HA_Open','HA_Close','high']].max(axis=1)
-        ha['HA_Low'] = ha[['HA_Open','HA_Close','low']].min(axis=1)
-        df = ha
-        df['Signal'] = np.where(df['HA_Close']>df['HA_Open'],'Buy',np.where(df['HA_Close']<df['HA_Open'],'Sell',None))
-        df['Confidence'] = abs(df['HA_Close']-df['HA_Open'])/df['HA_Close']*100
-        fig.add_trace(go.Candlestick(x=df.index, open=df['HA_Open'], high=df['HA_High'], low=df['HA_Low'], close=df['HA_Close']))
+  elif strategy == "Heikin-Ashi":
+    ha = df.copy()
+
+    # Heikin-Ashi calculations
+    ha['HA_Close'] = (df['open'] + df['high'] + df['low'] + df['close']) / 4
+    ha['HA_Open'] = 0.0
+    ha['HA_Open'].iloc[0] = df['open'].iloc[0]
+
+    for i in range(1, len(df)):
+        ha['HA_Open'].iloc[i] = (ha['HA_Open'].iloc[i-1] + ha['HA_Close'].iloc[i-1]) / 2
+
+    ha['HA_High'] = ha[['HA_Open', 'HA_Close', 'high']].max(axis=1)
+    ha['HA_Low'] = ha[['HA_Open', 'HA_Close', 'low']].min(axis=1)
+
+    # Signal generation
+    ha['Signal'] = np.where(
+        ha['HA_Close'] > ha['HA_Open'], 'Buy',
+        np.where(ha['HA_Close'] < ha['HA_Open'], 'Sell', None)
+    )
+
+    ha['Confidence'] = (abs(ha['HA_Close'] - ha['HA_Open']) / ha['HA_Close']) * 100
+
+    # Update main df
+    df = ha
+
+    # Plot Heikin-Ashi candles
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df['HA_Open'],
+        high=df['HA_High'],
+        low=df['HA_Low'],
+        close=df['HA_Close'],
+        name='Heikin-Ashi'
+    ))
 
     # ATR Breakout
     elif strategy == "ATR Breakout":
-        tr = np.maximum((df['high']-df['low']), np.maximum(abs(df['high']-df['close'].shift()), abs(df['low']-df['close'].shift())))
-        atr = tr.rolling(atr_period).mean()
-        upper = df['close'].shift(1)+atr
-        lower = df['close'].shift(1)-atr
-        df['Signal'] = np.where(df['close']>upper,' Buy',np.where(df['close']<lower,'Sell',None))
-        df['Confidence'] = (abs(df['close']-df['close'].shift(1))/atr)*50
+        df['ATR'] = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=atr_period)
+        df['Upper_Break'] = df['close'].rolling(atr_period).max() + df['ATR']
+        df['Lower_Break'] = df['close'].rolling(atr_period).min() - df['ATR']
+        df['Signal'] = np.where(df['close'] > df['Upper_Break'], 'Buy', np.where(df['close'] < df['Lower_Break'], 'Sell', None))
+        df['Confidence'] = abs(df['close'] - df['close'].rolling(atr_period).mean()) / df['ATR'] * 10
+        df['Confidence'] = df['Confidence'].clip(0, 100)
         fig.add_trace(go.Candlestick(x=df.index, open=df['open'], high=df['high'], low=df['low'], close=df['close']))
-        fig.add_trace(go.Scatter(x=df.index, y=upper, name='Upper Bound'))
-        fig.add_trace(go.Scatter(x=df.index, y=lower, name='Lower Bound'))
+        fig.add_trace(go.Scatter(x=df.index, y=df['Upper_Break'], name='Upper Break'))
+        fig.add_trace(go.Scatter(x=df.index, y=df['Lower_Break'], name='Lower Break'))
 
 
         # Green Line Strategy not used for now
