@@ -41,7 +41,8 @@ asset = st.sidebar.selectbox(
         # Optional synthetic indices (always open)
         "R_100", "R_50", "R_25", "R_10"
     ]
-)strategies = st.sidebar.multiselect(
+)
+strategies = st.sidebar.multiselect(
     "Select Strategies", 
     ["EMA Crossover", "RSI", "MACD", "Bollinger Bands", "Stochastic RSI", "Heikin-Ashi", "ATR Breakout"],
     default=["EMA Crossover", "RSI"]
