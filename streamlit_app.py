@@ -10,7 +10,7 @@ import pytz
 
 # -------------------- Config --------------------
 st.set_page_config(layout="wide")
-st.title("📈 Deriv Strategy Signal Dashboard")
+st.title("📈 Deriv Signal Bot Dashboard")
 
 APP_ID = "76035"
 TIMEZONE = pytz.timezone('Africa/Johannesburg')  # GMT+2
