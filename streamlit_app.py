@@ -11,7 +11,7 @@ import ta  # added for Green Line Strategy
 
 # -------------------- Config --------------------
 st.set_page_config(layout="wide")
-st.title("📈 Deriv Strategy Signal Dashboard with Green Line Strategy")
+st.title("📈 Deriv Strategy Signal Dashboard")
 
 APP_ID = "76035"
 TIMEZONE = pytz.timezone('Africa/Johannesburg')  # GMT+2
