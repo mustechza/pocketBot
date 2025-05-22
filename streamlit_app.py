@@ -22,8 +22,26 @@ signal_log = deque(maxlen=3)
 
 # -------------------- Sidebar Controls ----------------
 mode = st.sidebar.radio("Mode", ["Live", "Backtest"], index=0)
-asset = st.sidebar.selectbox("Select Asset", ["frxEURUSD", "frxGBPUSD", "frxUSDJPY", "R_100", "R_50", "R_25", "R_10"])
-strategies = st.sidebar.multiselect(
+# Sidebar asset selection with tight-spread forex pairs
+asset = st.sidebar.selectbox(
+    "Select Asset",
+    [
+        # Major forex pairs (tight spreads)
+        "frxEURUSD",  # Euro / US Dollar
+        "frxGBPUSD",  # British Pound / US Dollar
+        "frxUSDJPY",  # US Dollar / Japanese Yen
+        "frxAUDUSD",  # Australian Dollar / US Dollar
+        "frxUSDCHF",  # US Dollar / Swiss Franc
+        "frxUSDCAD",  # US Dollar / Canadian Dollar
+        "frxEURJPY",  # Euro / Japanese Yen
+        "frxEURGBP",  # Euro / British Pound
+        "frxGBPJPY",  # British Pound / Japanese Yen
+        "frxAUDJPY",  # Australian Dollar / Japanese Yen
+
+        # Optional synthetic indices (always open)
+        "R_100", "R_50", "R_25", "R_10"
+    ]
+)strategies = st.sidebar.multiselect(
     "Select Strategies", 
     ["EMA Crossover", "RSI", "MACD", "Bollinger Bands", "Stochastic RSI", "Heikin-Ashi", "ATR Breakout"],
     default=["EMA Crossover", "RSI"]
