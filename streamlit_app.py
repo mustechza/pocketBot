@@ -181,14 +181,23 @@ def plot_multi(df, selected_strats):
     return fig, agg_signals
 
 # -------------------- Backtest Logic --------------------
+
+
+
 if mode == "Backtest":
-    start_date = st.sidebar.date_input("Start Date")
-    end_date = st.sidebar.date_input("End Date")
+    # Date range inputs
+    start_date = st.sidebar.date_input("Start Date", value=pd.to_datetime("2025-01-01").date())
+    end_date = st.sidebar.date_input("End Date", value=pd.to_datetime("2025-01-02").date())
+
+    # Run backtest when button clicked
     if st.sidebar.button("Run Backtest"):
+        import asyncio
+        
+        # Fetch historical candles from Deriv
         async def fetch_history():
             uri = f"wss://ws.derivws.com/websockets/v3?app_id={APP_ID}"
             async with websockets.connect(uri) as ws:
-                await ws.send(json.dumps({
+                request = {
                     "ticks_history": asset,
                     "adjust_start_time": 1,
                     "start": int(pd.Timestamp(start_date).timestamp()),
@@ -196,23 +205,46 @@ if mode == "Backtest":
                     "style": "candles",
                     "granularity": granularity,
                     "subscribe": 0
-                }))
-                msg = await ws.recv()
-                return json.loads(msg).get('candles', [])
+                }
+                await ws.send(json.dumps(request))
+                response = await ws.recv()
+                return json.loads(response)
 
-        hist = asyncio.run(fetch_history())
-        df_hist = pd.DataFrame(hist)
-        df_hist['epoch'] = pd.to_datetime(df_hist['epoch'], unit='s')
-        df_hist = df_hist.set_index('epoch').tz_localize('UTC').tz_convert(TIMEZONE)
-        df_hist.rename(columns={'open':'open','high':'high','low':'low','close':'close'}, inplace=True)
-        fig_back, signals_back = plot_multi(df_hist, strategies)
-        chart_placeholder.plotly_chart(fig_back, use_container_width=True)
-        st.subheader("🔁 Backtest Agreed Signals")
-        for ts, sig, conf, price in signals_back:
-            expiry = ts + pd.Timedelta(minutes=period)
-            st.markdown(f"**{sig}** @ {price:.2f} — {ts.strftime('%Y-%m-%d %H:%M')} ➡️ {expiry.strftime('%Y-%m-%d %H:%M')} — 💡 {int(conf)}%")
-        st.sidebar.success(f"Backtest found {len(signals_back)} agreed signals.")
-        st.stop()
+        # Convert raw data into a timezone-aware DataFrame
+        def process_history(raw):
+            candles = raw.get("candles", [])
+            df = pd.DataFrame(candles)
+            df['time'] = pd.to_datetime(df['epoch'], unit='s')
+            df = df.set_index('time')
+            df = df.tz_localize('UTC').tz_convert(TIMEZONE)
+            df.rename(columns={'open': 'open', 'high': 'high', 'low': 'low', 'close': 'close'}, inplace=True)
+            return df[['open','high','low','close']]
+
+        # Fetch, process, and plot
+        with st.spinner("Running backtest..."):
+            raw_data = asyncio.run(fetch_history())
+            if "candles" not in raw_data:
+                st.error("Failed to retrieve historical data. Please try again.")
+                st.stop()
+
+            df_hist = process_history(raw_data)
+            fig_back, signals_back = plot_multi(df_hist, strategies)
+
+            # Show the candlestick + signals
+            chart_placeholder.plotly_chart(fig_back, use_container_width=True)
+            st.subheader("🔁 Backtest Agreed Signals")
+
+            # Display signal log
+            for ts, sig, conf, price in signals_back:
+                expiry = ts + pd.Timedelta(minutes=period)
+                st.markdown(
+                    f"**{sig}** @ {price:.5f} — {ts.strftime('%Y-%m-%d %H:%M:%S')} ➡️ {expiry.strftime('%Y-%m-%d %H:%M:%S')} — 💡 {int(conf)}%"
+                )
+
+            st.sidebar.success(f"Backtest complete: found {len(signals_back)} agreed signals.")
+            st.stop()
+
+
 
 # -------------------- Live Mode --------------------
 async def stream_live():
