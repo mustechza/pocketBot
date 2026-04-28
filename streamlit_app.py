@@ -5,9 +5,12 @@ import numpy as np
 import threading
 import time
 
-# ================== GLOBAL STATE ==================
+# ================== STATE INIT ==================
 if "history" not in st.session_state:
     st.session_state.history = []
+
+if "tick_history" not in st.session_state:
+    st.session_state.tick_history = []
 
 if "live_multiplier" not in st.session_state:
     st.session_state.live_multiplier = 0.0
@@ -42,43 +45,80 @@ def confidence_score(data):
 
     return score, streak, vol
 
-# ================== SOCKET CLIENT ==================
+# ================== SOCKET ==================
 def run_socket():
-    sio = socketio.Client()
+    sio = socketio.Client(reconnection=True)
 
+    # -------- CONNECT --------
     @sio.event
     def connect():
         st.session_state.connected = True
-        print("Connected")
+        print("✅ Connected")
 
-        # try multiple subscription formats
         sio.emit("subscribe", {"channel": "crash"})
         sio.emit("join", {"game": "crash"})
 
     @sio.event
     def disconnect():
         st.session_state.connected = False
-        print("Disconnected")
+        print("❌ Disconnected")
 
-    @sio.on("*")
-    def catch_all(event, data):
-        if isinstance(data, dict):
+    # -------- LIVE TICKS --------
+    @sio.on("crash_tick")
+    def on_tick(data):
+        try:
+            multiplier = data.get("multiplier")
 
-            # live tick
-            if "multiplier" in data:
-                st.session_state.live_multiplier = data["multiplier"]
+            if isinstance(multiplier, (int, float)) and 1 <= multiplier <= 1000:
+                st.session_state.live_multiplier = multiplier
 
-            # crash end
-            if "coefficient" in data or "multiplier" in data:
-                crash = data.get("coefficient") or data.get("multiplier")
+                st.session_state.tick_history.append(multiplier)
+
+                # limit tick history
+                if len(st.session_state.tick_history) > 50:
+                    st.session_state.tick_history = st.session_state.tick_history[-50:]
+
+        except Exception as e:
+            print("Tick error:", e)
+
+    # -------- CRASH END --------
+    @sio.on("crash_end")
+    def on_crash(data):
+        try:
+            crash = data.get("multiplier") or data.get("coefficient")
+
+            if isinstance(crash, (int, float)) and 1 <= crash <= 1000:
+                st.session_state.history.append(crash)
+
+                # limit history
+                if len(st.session_state.history) > 200:
+                    st.session_state.history = st.session_state.history[-200:]
+
+                # reset tick graph for next round
+                st.session_state.tick_history = []
+
+                print(f"💥 Crash: {crash}x")
+
+        except Exception as e:
+            print("Crash error:", e)
+
+    # -------- FALLBACK --------
+    @sio.on("round")
+    def on_round(data):
+        try:
+            if "coefficient" in data:
+                crash = data["coefficient"]
 
                 if isinstance(crash, (int, float)):
                     st.session_state.history.append(crash)
 
-                    # keep last 200
                     if len(st.session_state.history) > 200:
                         st.session_state.history = st.session_state.history[-200:]
 
+        except:
+            pass
+
+    # -------- CONNECT --------
     sio.connect(
         "https://socketv4.bc.game",
         transports=["websocket"]
@@ -86,56 +126,62 @@ def run_socket():
 
     sio.wait()
 
-# ================== START SOCKET THREAD ==================
-if "socket_thread_started" not in st.session_state:
+# ================== START THREAD ==================
+if "socket_started" not in st.session_state:
     thread = threading.Thread(target=run_socket, daemon=True)
     thread.start()
-    st.session_state.socket_thread_started = True
+    st.session_state.socket_started = True
 
 # ================== UI ==================
 st.set_page_config(layout="wide")
-
-st.title("🚀 BC.Game Crash Dashboard")
+st.title("🚀 Crash Live Dashboard (BC.Game)")
 
 # STATUS
 status = "🟢 Connected" if st.session_state.connected else "🔴 Disconnected"
 st.subheader(f"Status: {status}")
 
 # LIVE MULTIPLIER
-st.metric("Live Multiplier", f"{st.session_state.live_multiplier}x")
+st.metric("Live Multiplier", f"{st.session_state.live_multiplier:.2f}x")
 
-# HISTORY DATAFRAME
+# LIVE GRAPH
+st.subheader("📡 Live Multiplier (Current Round)")
+if st.session_state.tick_history:
+    st.line_chart(st.session_state.tick_history)
+else:
+    st.info("Waiting for round to start...")
+
+# HISTORY + SIGNALS
 history = st.session_state.history
 
 if history:
     df = pd.DataFrame(history, columns=["Multiplier"])
 
-    # SIGNALS
     score, streak, vol = confidence_score(history)
 
     col1, col2, col3 = st.columns(3)
-
     col1.metric("Low Streak", streak)
     col2.metric("Volatility", round(vol, 2))
     col3.metric("Confidence", f"{score}%")
 
-    # SIGNAL ALERT
+    # SIGNAL DISPLAY
     if score >= 70:
         st.success("🔥 STRONG SIGNAL - SPIKE ZONE")
     elif score >= 50:
         st.warning("⚠️ MODERATE SIGNAL")
+    else:
+        st.info("No strong signal")
 
-    # CHART
+    # HISTORY CHART
     st.subheader("📈 Crash History")
     st.line_chart(df)
 
-    # LAST VALUES
+    # LAST ROUNDS
     st.subheader("📊 Last 20 Rounds")
     st.write(df.tail(20))
 
 else:
-    st.info("Waiting for data...")
+    st.info("Waiting for crash data...")
 
-# AUTO REFRESH
+# AUTO REFRESH (smooth)
 time.sleep(1)
 st.rerun()
