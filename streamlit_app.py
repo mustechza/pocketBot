@@ -5,6 +5,35 @@ import numpy as np
 import threading
 import time
 
+
+sio = socketio.Client(logger=True, engineio_logger=True)
+
+@sio.event
+def connect():
+    print("✅ Connected")
+
+    # Try multiple subscriptions
+    sio.emit("subscribe", {"channel": "crash"})
+    sio.emit("join", {"game": "crash"})
+    sio.emit("sub", {"name": "crash"})
+
+@sio.event
+def disconnect():
+    print("❌ Disconnected")
+
+# 🔥 Catch EVERYTHING
+@sio.on("*")
+def catch_all(event, data):
+    print("EVENT:", event)
+    print("DATA:", data)
+    print("-" * 50)
+
+sio.connect(
+    "https://socketv4.bc.game",
+    transports=["websocket"]
+)
+
+sio.wait()
 # ================== STATE INIT ==================
 if "history" not in st.session_state:
     st.session_state.history = []
