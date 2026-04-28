@@ -1,6 +1,2 @@
 streamlit==1.33.0
-python-socketio[client]==5.11.2
-websocket-client==1.7.0
-pandas==2.2.2
-numpy==1.26.4
-requests==2.31.0
+selenium==4.20.0
