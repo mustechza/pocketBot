@@ -1,32 +1,76 @@
 import streamlit as st
-import requests
-import pandas as pd
-import numpy as np
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
+import threading
 import time
 
-# ================= CONFIG =================
-API_URL = "https://crashscores.com/api/games/rounds-detailed"
-PARAMS = {
-    "limit": 50,
-    "brand": "sportpesa",
-    "game": "spaceman"
-}
-
 # ================= STATE =================
+if "live_multiplier" not in st.session_state:
+    st.session_state.live_multiplier = 0.0
+
+if "phase" not in st.session_state:
+    st.session_state.phase = "Loading"
+
 if "history" not in st.session_state:
     st.session_state.history = []
 
-if "last_round_id" not in st.session_state:
-    st.session_state.last_round_id = None
+# ================= SELENIUM WORKER =================
+def run_scraper():
+    options = Options()
+    options.add_argument("--headless=new")
+    options.add_argument("--disable-blink-features=AutomationControlled")
 
-# ================= FETCH DATA =================
-def fetch_data():
-    try:
-        res = requests.get(API_URL, params=PARAMS)
-        data = res.json()
-        return data.get("rounds", [])
-    except:
-        return []
+    driver = webdriver.Chrome(options=options)
+    driver.get("https://crashscores.com")
+
+    time.sleep(5)
+
+    last_phase = None
+
+    while True:
+        try:
+            stat_boxes = driver.find_elements(By.CSS_SELECTOR, ".live-stat-box")
+
+            multiplier_el = stat_boxes[0].find_element(By.CLASS_NAME, "current-val")
+            phase_el = stat_boxes[1].find_element(By.CLASS_NAME, "current-val")
+
+            raw_value = multiplier_el.text.strip()
+            phase = phase_el.text.strip()
+
+            st.session_state.phase = phase
+
+            if raw_value != "-x":
+                value = raw_value.replace("x", "").strip()
+
+                try:
+                    multiplier = float(value)
+                    st.session_state.live_multiplier = multiplier
+                except:
+                    pass
+
+            # Detect round end
+            if last_phase == "Running" and phase == "Idle":
+                crash = st.session_state.live_multiplier
+                if crash > 0:
+                    st.session_state.history.append(crash)
+
+                    # limit
+                    if len(st.session_state.history) > 200:
+                        st.session_state.history = st.session_state.history[-200:]
+
+            last_phase = phase
+
+        except Exception as e:
+            print("Scraper error:", e)
+
+        time.sleep(0.5)
+
+# ================= START THREAD =================
+if "scraper_started" not in st.session_state:
+    thread = threading.Thread(target=run_scraper, daemon=True)
+    thread.start()
+    st.session_state.scraper_started = True
 
 # ================= SIGNAL ENGINE =================
 def low_streak(data):
@@ -38,87 +82,35 @@ def low_streak(data):
             break
     return count
 
-def volatility(data):
-    if len(data) < 10:
-        return 0
-    return np.std(data[-10:])
-
-def confidence_score(data):
-    streak = low_streak(data)
-    vol = volatility(data)
-
-    score = 0
-    if streak >= 5:
-        score += 50
-    if vol > 2:
-        score += 50
-
-    return score, streak, vol
-
 # ================= UI =================
 st.set_page_config(layout="wide")
-st.title("🚀 Spaceman Crash Dashboard (Stable API)")
+st.title("🚀 Live Crash Dashboard (DOM Scraper)")
 
-# ================= FETCH LOOP =================
-rounds = fetch_data()
+# STATUS
+st.subheader(f"Phase: {st.session_state.phase}")
 
-new_data = False
+# LIVE MULTIPLIER
+st.metric("Live Multiplier", f"{st.session_state.live_multiplier:.2f}x")
 
-for r in reversed(rounds):
-    rid = r["round_id"]
-    coef = r["coefficient"]
-
-    if st.session_state.last_round_id is None:
-        st.session_state.last_round_id = rid
-
-    if rid != st.session_state.last_round_id:
-        st.session_state.history.append(coef)
-        st.session_state.last_round_id = rid
-        new_data = True
-
-# limit history
-if len(st.session_state.history) > 200:
-    st.session_state.history = st.session_state.history[-200:]
-
-# ================= LIVE DISPLAY =================
-if rounds:
-    latest = rounds[0]["coefficient"]
-    st.metric("Latest Crash", f"{latest}x")
-else:
-    st.metric("Latest Crash", "Loading...")
-
-# ================= ANALYSIS =================
+# HISTORY
 history = st.session_state.history
 
 if history:
-    df = pd.DataFrame(history, columns=["Multiplier"])
+    streak = low_streak(history)
 
-    score, streak, vol = confidence_score(history)
-
-    col1, col2, col3 = st.columns(3)
+    col1, col2 = st.columns(2)
     col1.metric("Low Streak", streak)
-    col2.metric("Volatility", round(vol, 2))
-    col3.metric("Confidence", f"{score}%")
+    col2.metric("Total Rounds", len(history))
 
-    # SIGNALS
-    if score >= 70:
-        st.success("🔥 STRONG SIGNAL - SPIKE ZONE")
-    elif score >= 50:
-        st.warning("⚠️ MODERATE SIGNAL")
-    else:
-        st.info("No strong signal")
-
-    # CHART
     st.subheader("📈 Crash History")
-    st.line_chart(df)
+    st.line_chart(history)
 
-    # LAST ROUNDS
-    st.subheader("📊 Last 20 Rounds")
-    st.write(df.tail(20))
+    st.subheader("📊 Last 20")
+    st.write(history[-20:])
 
 else:
     st.info("Waiting for data...")
 
-# ================= REFRESH =================
-time.sleep(3)
+# REFRESH LOOP
+time.sleep(1)
 st.rerun()
