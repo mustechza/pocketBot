@@ -1,78 +1,77 @@
 import streamlit as st
-from selenium import webdriver
-from selenium.webdriver.common.by import By
-from selenium.webdriver.chrome.options import Options
 import threading
 import time
+import queue
+from playwright.sync_api import sync_playwright
+from streamlit_autorefresh import st_autorefresh
+
+# ================= QUEUE =================
+data_queue = queue.Queue()
+
+# ================= SCRAPER =================
+def scrape_bc_game(q: queue.Queue):
+    with sync_playwright() as p:
+        browser = p.chromium.launch(headless=True)
+        page = browser.new_page()
+
+        page.goto("https://bc.game/game/crash", timeout=60000)
+        page.wait_for_timeout(8000)
+
+        last_seen = set()
+
+        while True:
+            try:
+                rows = page.query_selector_all("tbody tr")
+
+                for row in rows[:30]:  # latest 30
+                    cols = row.query_selector_all("td")
+
+                    if len(cols) < 2:
+                        continue
+
+                    game_id = cols[0].inner_text().strip()
+                    multiplier_text = cols[1].inner_text().strip()
+
+                    try:
+                        multiplier = float(multiplier_text)
+                    except:
+                        continue
+
+                    if game_id not in last_seen:
+                        last_seen.add(game_id)
+
+                        q.put({
+                            "id": game_id,
+                            "multiplier": multiplier
+                        })
+
+                # keep memory small
+                if len(last_seen) > 500:
+                    last_seen = set(list(last_seen)[-300:])
+
+            except Exception as e:
+                print("Scraper error:", e)
+
+            time.sleep(2)
+
+# ================= START THREAD =================
+if "started" not in st.session_state:
+    threading.Thread(target=scrape_bc_game, args=(data_queue,), daemon=True).start()
+    st.session_state.started = True
 
 # ================= STATE =================
-if "live_multiplier" not in st.session_state:
-    st.session_state.live_multiplier = 0.0
-
-if "phase" not in st.session_state:
-    st.session_state.phase = "Loading"
-
 if "history" not in st.session_state:
     st.session_state.history = []
 
-# ================= SELENIUM WORKER =================
-def run_scraper():
-    options = Options()
-    options.add_argument("--headless=new")
-    options.add_argument("--disable-blink-features=AutomationControlled")
+# ================= LOAD QUEUE =================
+while not data_queue.empty():
+    data = data_queue.get()
+    st.session_state.history.append(data["multiplier"])
 
-    driver = webdriver.Chrome(options=options)
-    driver.get("https://crashscores.com")
+    if len(st.session_state.history) > 200:
+        st.session_state.history = st.session_state.history[-200:]
 
-    time.sleep(5)
-
-    last_phase = None
-
-    while True:
-        try:
-            stat_boxes = driver.find_elements(By.CSS_SELECTOR, ".live-stat-box")
-
-            multiplier_el = stat_boxes[0].find_element(By.CLASS_NAME, "current-val")
-            phase_el = stat_boxes[1].find_element(By.CLASS_NAME, "current-val")
-
-            raw_value = multiplier_el.text.strip()
-            phase = phase_el.text.strip()
-
-            st.session_state.phase = phase
-
-            if raw_value != "-x":
-                value = raw_value.replace("x", "").strip()
-
-                try:
-                    multiplier = float(value)
-                    st.session_state.live_multiplier = multiplier
-                except:
-                    pass
-
-            # Detect round end
-            if last_phase == "Running" and phase == "Idle":
-                crash = st.session_state.live_multiplier
-                if crash > 0:
-                    st.session_state.history.append(crash)
-
-                    # limit
-                    if len(st.session_state.history) > 200:
-                        st.session_state.history = st.session_state.history[-200:]
-
-            last_phase = phase
-
-        except Exception as e:
-            print("Scraper error:", e)
-
-        time.sleep(0.5)
-
-# ================= START THREAD =================
-if "scraper_started" not in st.session_state:
-    thread = threading.Thread(target=run_scraper, daemon=True)
-    thread.start()
-    st.session_state.scraper_started = True
-
-# ================= SIGNAL ENGINE =================
+# ================= ANALYSIS =================
 def low_streak(data):
     count = 0
     for x in reversed(data):
@@ -82,35 +81,30 @@ def low_streak(data):
             break
     return count
 
+def high_hits(data):
+    return len([x for x in data[-50:] if x >= 10])
+
 # ================= UI =================
 st.set_page_config(layout="wide")
-st.title("🚀 Live Crash Dashboard (DOM Scraper)")
+st.title("🚀 BC.Game Crash Live Tracker (Playwright)")
 
-# STATUS
-st.subheader(f"Phase: {st.session_state.phase}")
-
-# LIVE MULTIPLIER
-st.metric("Live Multiplier", f"{st.session_state.live_multiplier:.2f}x")
-
-# HISTORY
 history = st.session_state.history
 
 if history:
-    streak = low_streak(history)
+    col1, col2, col3 = st.columns(3)
 
-    col1, col2 = st.columns(2)
-    col1.metric("Low Streak", streak)
-    col2.metric("Total Rounds", len(history))
+    col1.metric("Total Rounds", len(history))
+    col2.metric("Low Streak (<1.5x)", low_streak(history))
+    col3.metric("High Hits (10x+ last 50)", high_hits(history))
 
     st.subheader("📈 Crash History")
     st.line_chart(history)
 
-    st.subheader("📊 Last 20")
+    st.subheader("📊 Last 20 Crashes")
     st.write(history[-20:])
 
 else:
-    st.info("Waiting for data...")
+    st.info("Waiting for crash data...")
 
-# REFRESH LOOP
-time.sleep(1)
-st.rerun()
+# auto refresh
+st_autorefresh(interval=2000, key="refresh")
