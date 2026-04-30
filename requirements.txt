@@ -1,2 +1,5 @@
-streamlit==1.33.0
-selenium==4.20.0
+streamlit
+playwright
+streamlit-autorefresh
+pandas
+numpy
