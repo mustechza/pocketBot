@@ -1,22 +1,17 @@
 import streamlit as st
+import time
+import threading
+import queue
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.chrome.options import Options
-import threading
-import time
+from streamlit_autorefresh import st_autorefresh
 
-# ================= STATE =================
-if "live_multiplier" not in st.session_state:
-    st.session_state.live_multiplier = 0.0
+# ================= QUEUE (SAFE COMMUNICATION) =================
+data_queue = queue.Queue()
 
-if "phase" not in st.session_state:
-    st.session_state.phase = "Loading"
-
-if "history" not in st.session_state:
-    st.session_state.history = []
-
-# ================= SELENIUM WORKER =================
-def run_scraper():
+# ================= SCRAPER =================
+def run_scraper(q: queue.Queue):
     options = Options()
     options.add_argument("--headless=new")
     options.add_argument("--disable-blink-features=AutomationControlled")
@@ -38,26 +33,20 @@ def run_scraper():
             raw_value = multiplier_el.text.strip()
             phase = phase_el.text.strip()
 
-            st.session_state.phase = phase
+            multiplier = 0.0
 
             if raw_value != "-x":
-                value = raw_value.replace("x", "").strip()
-
                 try:
-                    multiplier = float(value)
-                    st.session_state.live_multiplier = multiplier
+                    multiplier = float(raw_value.replace("x", "").strip())
                 except:
                     pass
 
-            # Detect round end
-            if last_phase == "Running" and phase == "Idle":
-                crash = st.session_state.live_multiplier
-                if crash > 0:
-                    st.session_state.history.append(crash)
+            event = {
+                "multiplier": multiplier,
+                "phase": phase
+            }
 
-                    # limit
-                    if len(st.session_state.history) > 200:
-                        st.session_state.history = st.session_state.history[-200:]
+            q.put(event)
 
             last_phase = phase
 
@@ -66,11 +55,33 @@ def run_scraper():
 
         time.sleep(0.5)
 
-# ================= START THREAD =================
-if "scraper_started" not in st.session_state:
-    thread = threading.Thread(target=run_scraper, daemon=True)
-    thread.start()
-    st.session_state.scraper_started = True
+# ================= START SCRAPER THREAD =================
+if "started" not in st.session_state:
+    threading.Thread(target=run_scraper, args=(data_queue,), daemon=True).start()
+    st.session_state.started = True
+
+# ================= SESSION STATE =================
+if "live_multiplier" not in st.session_state:
+    st.session_state.live_multiplier = 0.0
+
+if "phase" not in st.session_state:
+    st.session_state.phase = "Loading"
+
+if "history" not in st.session_state:
+    st.session_state.history = []
+
+# ================= STREAM DATA FROM QUEUE =================
+while not data_queue.empty():
+    data = data_queue.get()
+
+    st.session_state.live_multiplier = data["multiplier"]
+    st.session_state.phase = data["phase"]
+
+    if data["phase"] == "Idle" and data["multiplier"] > 0:
+        st.session_state.history.append(data["multiplier"])
+
+        if len(st.session_state.history) > 200:
+            st.session_state.history = st.session_state.history[-200:]
 
 # ================= SIGNAL ENGINE =================
 def low_streak(data):
@@ -84,22 +95,16 @@ def low_streak(data):
 
 # ================= UI =================
 st.set_page_config(layout="wide")
-st.title("🚀 Live Crash Dashboard (DOM Scraper)")
+st.title("🚀 Live Crash Dashboard (Stable Version)")
 
-# STATUS
 st.subheader(f"Phase: {st.session_state.phase}")
-
-# LIVE MULTIPLIER
 st.metric("Live Multiplier", f"{st.session_state.live_multiplier:.2f}x")
 
-# HISTORY
 history = st.session_state.history
 
 if history:
-    streak = low_streak(history)
-
     col1, col2 = st.columns(2)
-    col1.metric("Low Streak", streak)
+    col1.metric("Low Streak", low_streak(history))
     col2.metric("Total Rounds", len(history))
 
     st.subheader("📈 Crash History")
@@ -107,10 +112,8 @@ if history:
 
     st.subheader("📊 Last 20")
     st.write(history[-20:])
-
 else:
     st.info("Waiting for data...")
 
-# REFRESH LOOP
-time.sleep(1)
-st.rerun()
+# ================= AUTO REFRESH =================
+st_autorefresh(interval=1000, key="refresh")
